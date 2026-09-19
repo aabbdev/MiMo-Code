@@ -110,13 +110,20 @@ export function usable(input: { cfg: Config.Info; model: Provider.Model }) {
   return contextWindow(input).usable
 }
 
+/**
+ * Tokens a request actually carried. `total` is preferred, but providers that
+ * report the four buckets separately leave it unset, so fall back to their sum —
+ * the count every overflow decision is made on.
+ */
+export function contextTokens(tokens: MessageV2.Assistant["tokens"]): number {
+  return tokens.total || tokens.input + tokens.output + tokens.cache.read + tokens.cache.write
+}
+
 export function isOverflow(input: { cfg: Config.Info; tokens: MessageV2.Assistant["tokens"]; model: Provider.Model }) {
   if (input.cfg.compaction?.auto === false) return false
   if (input.model.limit.context === 0) return false
 
-  const count =
-    input.tokens.total || input.tokens.input + input.tokens.output + input.tokens.cache.read + input.tokens.cache.write
-  return count >= usable(input)
+  return contextTokens(input.tokens) >= usable(input)
 }
 
 export function pressureLevel(input: {
@@ -136,10 +143,7 @@ export function contextPressureLevel(input: {
 }): 0 | 1 | 2 | 3 {
   if (input.model.limit.context === 0) return 0
 
-  const count =
-    (input.tokens.total ||
-      input.tokens.input + input.tokens.output + input.tokens.cache.read + input.tokens.cache.write) +
-    (input.additionalTokens ?? 0)
+  const count = contextTokens(input.tokens) + (input.additionalTokens ?? 0)
   const limit = usable(input)
   if (limit === 0) return 0
 

@@ -43,7 +43,7 @@ import { SessionPrune } from "./prune"
 import { SessionCheckpoint } from "./checkpoint"
 import { SessionCompaction } from "./compaction"
 import { computeLastMessageInfo } from "./last-message-info"
-import { contextPressureLevel, usable, isOverflow as overflowCheck } from "./overflow"
+import { contextPressureLevel, contextTokens, usable, isOverflow as overflowCheck } from "./overflow"
 import { Config } from "@/config"
 import { isMemoryWriteEnabled } from "@/memory/write-gate"
 import { Global } from "@/global"
@@ -1055,11 +1055,30 @@ export const layer = Layer.effect(
         // promptOps is declared in TryStartCheckpointWriterInput but never read
         // by the writer (it spawns as a subagent via spawnRef), so a stub
         // suffices.
+        //
+        // The parent's live size comes from the last assistant message in the
+        // slice the writer would fork — the same count `isOverflow` uses. The
+        // budget it is measured against comes from the resolved parent model;
+        // when either is unavailable the writer keeps the configured default.
+        const lastAssistant = input.msgs.findLast((m) => m.info.role === "assistant")
+        const budget = yield* provider
+          .getModel(input.model.providerID as ProviderID, input.model.id as ModelID)
+          .pipe(
+            Effect.flatMap((resolved) =>
+              config.get().pipe(Effect.map((cfg) => usable({ cfg, model: resolved }))),
+            ),
+            Effect.catch(() => Effect.succeed(undefined)),
+          )
+        const context =
+          budget !== undefined && lastAssistant?.info.role === "assistant"
+            ? { tokens: contextTokens(lastAssistant.info.tokens), budget }
+            : undefined
         yield* checkpoint
           .tryStartCheckpointWriter({
             sessionID: input.sessionID,
             model: { providerID: input.model.providerID, modelID: input.model.id },
             writerModel: yield* resolveWriterModel(input.model),
+            context,
             promptOps: {} as never,
           })
           .pipe(Effect.catch(() => Effect.succeed<"started" | "queued" | "skipped">("skipped")))
@@ -5232,7 +5251,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               // Fork agents are always subagents (lastUser.agentID is set); use
               // per-actor compaction on overflow (same as non-fork subagent path).
               if (!isBoundedComputation && result === "overflow") {
-                yield* compaction
+                // A compaction that cannot run — its own request does not fit the
+                // window either — must not be retried. Ignoring the failure re-sent
+                // the identical oversized request forever (26 provider rejections
+                // and counting on one dpu session). End the turn instead.
+                const compacted = yield* compaction
                   .create({
                     sessionID,
                     agent: lastUser.agent,
@@ -5241,7 +5264,14 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     overflow: true,
                     agentID: lastUser.agentID,
                   })
-                  .pipe(Effect.ignore)
+                  .pipe(
+                    Effect.as(true),
+                    Effect.catchCauseIf((cause) => !Cause.hasInterruptsOnly(cause), () => Effect.succeed(false)),
+                  )
+                if (!compacted) {
+                  yield* slog.error("overflow compaction could not run, ending the turn", { sessionID })
+                  return "break" as const
+                }
                 skipOverflowCheck = true
               }
               return "continue" as const
@@ -5537,7 +5567,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               // Gate must exclude "main" — see comment at the matching gate
               // earlier in this file (~line 1716) and at checkpoint.ts:715.
               if (lastUser.agentID && lastUser.agentID !== "main") {
-                yield* compaction
+                // A compaction that cannot run must not be retried — see the fork
+                // subagent branch above: ignoring the failure looped the identical
+                // oversized request until the process was restarted.
+                const compacted = yield* compaction
                   .create({
                     sessionID,
                     agent: lastUser.agent,
@@ -5546,7 +5579,17 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     overflow: true,
                     agentID: lastUser.agentID,
                   })
-                  .pipe(Effect.ignore)
+                  .pipe(
+                    Effect.as(true),
+                    Effect.catchCauseIf((cause) => !Cause.hasInterruptsOnly(cause), () => Effect.succeed(false)),
+                  )
+                if (!compacted) {
+                  yield* slog.error("overflow compaction could not run, ending the turn", {
+                    sessionID,
+                    agentID: lastUser.agentID,
+                  })
+                  return "break" as const
+                }
                 skipOverflowCheck = true
                 return "continue" as const
               }

@@ -286,6 +286,64 @@ describe("checkpoint writer forkContext shape per mode", () => {
   )
 
   it.live(
+    "T7: an unset fork still falls back to DELTA once the parent prefix is too large to fork",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          yield* reset
+          installRecordingCapture()
+
+          const svc = yield* SessionCheckpoint.Service
+          const { info } = yield* seedFourMessages()
+
+          // Parent at 80% of its working budget. Forking copies its whole prefix,
+          // which would leave the writer no room for its own work — the request
+          // then cannot reach the provider at all. DELTA must win.
+          const outcome = yield* svc.tryStartCheckpointWriter({
+            sessionID: info.id,
+            model: { providerID: "test", modelID: "test-model" },
+            context: { tokens: 800_000, budget: 1_000_000 },
+            promptOps: {} as never,
+          })
+          expect(outcome).toBe("started")
+
+          expect(captureLog.calls.length).toBe(1)
+          // No-fork path uses the writer's own agent.
+          expect(captureLog.calls[0].agentName).toBe("checkpoint-writer")
+        }),
+      { config: {} },
+    ),
+  )
+
+  it.live(
+    "T7b: an unset fork keeps forking while the parent prefix is still affordable",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          yield* reset
+          installRecordingCapture()
+
+          const svc = yield* SessionCheckpoint.Service
+          const { info } = yield* seedFourMessages()
+
+          // Same session, same config — only the size differs (40% of the budget).
+          const outcome = yield* svc.tryStartCheckpointWriter({
+            sessionID: info.id,
+            model: { providerID: "test", modelID: "test-model" },
+            context: { tokens: 400_000, budget: 1_000_000 },
+            promptOps: {} as never,
+          })
+          expect(outcome).toBe("started")
+
+          expect(captureLog.calls.length).toBe(1)
+          // Fork path captures the parent's agent from the watermark message.
+          expect(captureLog.calls[0].agentName).toBe("build")
+        }),
+      { config: {} },
+    ),
+  )
+
+  it.live(
     "T4: fork:false with mid-pair lastCheckpointMessageID — alignment walks past tool_result-only u2 to u1",
     provideTmpdirInstance(
       () =>

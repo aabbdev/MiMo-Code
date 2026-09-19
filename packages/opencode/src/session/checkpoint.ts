@@ -192,6 +192,19 @@ const TAIL_MIN_TOKENS = 10_000
 const TAIL_MAX_TOKENS = 20_000
 const TAIL_MIN_TEXT_BLOCK_MESSAGES = 5
 
+/**
+ * Ceiling on the parent's context, as a share of its working budget, above which
+ * fork mode is abandoned for DELTA.
+ *
+ * Fork mode copies the parent's WHOLE prefix, so it only fits while that prefix
+ * leaves room for the writer's own work — and that work is not predictable: on a
+ * dpu session a writer spent ~240k tokens over 87 tool calls (reads + edits of
+ * the checkpoint and memory files). Below half the budget the writer's own share
+ * still fits whatever it does; above it, DELTA (which carries only the messages
+ * since the last checkpoint) is the only bounded option.
+ */
+const FORK_MAX_CONTEXT_SHARE = 0.5
+
 // How long a context rebuild waits for an in-flight checkpoint writer to finish
 // before proceeding with whatever is currently on disk (the writer keeps
 // running in the background). Bounded so a slow writer can't make the main
@@ -459,6 +472,13 @@ export type TryStartCheckpointWriterInput = {
    * last checkpoint.
    */
   writerModel?: { providerID: string; modelID: string }
+  /**
+   * The parent's live context size and the working budget its model allows, so
+   * the writer can tell whether forking the parent's prefix would still fit (see
+   * FORK_MAX_CONTEXT_SHARE). Omitted means "cannot tell" — the configured
+   * default then applies unchanged.
+   */
+  context?: { tokens: number; budget: number }
   promptOps: ActorPromptOps
 }
 
@@ -822,10 +842,19 @@ export const layer: Layer.Layer<
       // is pointless on a different model and likely unaffordable on a smaller
       // one whose window may not hold it. Delta mode gives the writer its own
       // system/tools and only the messages since the last checkpoint.
+      //
+      // The same reasoning applies to the parent's own model once the parent
+      // approaches its budget, so a parent context above FORK_MAX_CONTEXT_SHARE
+      // of the working budget also falls back to DELTA.
       const explicitFork = cfg.checkpoint?.fork
       const writerModel = input.writerModel ?? input.model
-      const forkMode =
-        input.writerModel !== undefined && explicitFork === undefined ? false : (explicitFork ?? true)
+      // Fork only when it is affordable: fork mode copies the parent's whole
+      // prefix, so a parent already near its budget leaves the writer no room for
+      // its own work and the request cannot reach the provider at all. An
+      // explicit `checkpoint.fork` still wins over both signals.
+      const forkAffordable =
+        input.context === undefined || input.context.tokens <= input.context.budget * FORK_MAX_CONTEXT_SHARE
+      const forkMode = explicitFork ?? (input.writerModel === undefined && forkAffordable)
 
       const parentRow = yield* Effect.sync(() =>
         Database.use((d) =>
