@@ -1,0 +1,44 @@
+diff --git a/dist/index.js b/dist/index.js
+index d73573b..527c49e 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -625,7 +625,7 @@ var OpenAICompatibleChatLanguageModel = class {
+       ...args,
+       stream: true,
+       // only include stream_options when in strict compatibility mode:
+-      stream_options: this.config.includeUsage ? { include_usage: true } : void 0
++      stream_options: this.config.includeUsage ? { include_usage: true } : args.stream_options
+     });
+     const metadataExtractor = (_a = this.config.metadataExtractor) == null ? void 0 : _a.createStreamExtractor();
+     const { responseHeaders, value: response } = await (0, import_provider_utils2.postJsonToApi)({
+@@ -1280,7 +1280,7 @@ var OpenAICompatibleCompletionLanguageModel = class {
+       ...args,
+       stream: true,
+       // only include stream_options when in strict compatibility mode:
+-      stream_options: this.config.includeUsage ? { include_usage: true } : void 0
++      stream_options: this.config.includeUsage ? { include_usage: true } : args.stream_options
+     };
+     const { responseHeaders, value: response } = await (0, import_provider_utils3.postJsonToApi)({
+       url: this.config.url({
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 237c9e2..c515cdc 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -612,7 +612,7 @@ var OpenAICompatibleChatLanguageModel = class {
+       ...args,
+       stream: true,
+       // only include stream_options when in strict compatibility mode:
+-      stream_options: this.config.includeUsage ? { include_usage: true } : void 0
++      stream_options: this.config.includeUsage ? { include_usage: true } : args.stream_options
+     });
+     const metadataExtractor = (_a = this.config.metadataExtractor) == null ? void 0 : _a.createStreamExtractor();
+     const { responseHeaders, value: response } = await postJsonToApi({
+@@ -1277,7 +1277,7 @@ var OpenAICompatibleCompletionLanguageModel = class {
+       ...args,
+       stream: true,
+       // only include stream_options when in strict compatibility mode:
+-      stream_options: this.config.includeUsage ? { include_usage: true } : void 0
++      stream_options: this.config.includeUsage ? { include_usage: true } : args.stream_options
+     };
+     const { responseHeaders, value: response } = await postJsonToApi2({
+       url: this.config.url({

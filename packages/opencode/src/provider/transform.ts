@@ -266,7 +266,7 @@ function normalizeMessages(
 // markers. Pure name matching (model.api.id.includes("claude")) is fragile — a Claude
 // model behind an OpenAI-compatible proxy gets matched but markers are silently dropped.
 // See docs/cache-policy.md and upstream opencode#26786.
-function supportsCacheMarkers(model: Provider.Model): boolean {
+export function supportsCacheMarkers(model: Provider.Model): boolean {
   // Anthropic-only SDKs — always support inline markers
   if (model.api.npm === "@ai-sdk/anthropic" || model.api.npm === "@ai-sdk/google-vertex/anthropic") return true
   if (model.providerID === "anthropic" || model.providerID === "google-vertex-anthropic") return true
@@ -1683,6 +1683,18 @@ export function options(input: {
     if (input.model.api.id.includes("gemini-3")) {
       result["reasoning"] = { effort: "high" }
     }
+  }
+
+  // A streamed OpenAI-compatible response omits token usage unless
+  // `stream_options.include_usage` is requested — so without this a Together
+  // turn returns NO usage at all, and every token metric (input, output,
+  // cache-read) silently reads 0, making the cache-hit rate look like 0%.
+  // provider.ts sets `includeUsage` only for the openai-compatible npm, and
+  // `@ai-sdk/togetherai` builds its model config without forwarding that option
+  // either. Its providerOptions ARE spread into the request body, so request it
+  // here. (`@ai-sdk/openai-compatible` is handled at its own construction site.)
+  if (input.model.api.npm === "@ai-sdk/togetherai") {
+    result["stream_options"] = { include_usage: true }
   }
 
   if (

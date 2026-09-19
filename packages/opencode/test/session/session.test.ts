@@ -158,6 +158,65 @@ describe("step-finish token propagation via Bus event", () => {
   )
 })
 
+describe("Session.getUsage cached-token shapes", () => {
+  const model = {
+    providerID: "togetherai",
+    api: { id: "meta-llama/Llama-3.3-70B-Instruct-Turbo", npm: "@ai-sdk/togetherai" },
+    cost: { input: 1, output: 1, cache: { read: 0.1, write: 0 } },
+  } as unknown as Parameters<typeof SessionNs.getUsage>[0]["model"]
+
+  // Normal shape: the AI SDK parsed `prompt_tokens_details.cached_tokens` into
+  // inputTokenDetails.cacheReadTokens.
+  test("reads the nested cache-read shape", () => {
+    const usage = {
+      inputTokens: 1000,
+      outputTokens: 10,
+      totalTokens: 1010,
+      inputTokenDetails: { noCacheTokens: 900, cacheReadTokens: 100, cacheWriteTokens: 0 },
+      outputTokenDetails: { textTokens: 10, reasoningTokens: 0 },
+    } as unknown as Parameters<typeof SessionNs.getUsage>[0]["usage"]
+
+    const result = SessionNs.getUsage({ model, usage })
+    expect(result.tokens.cache.read).toBe(100)
+    expect(result.tokens.input).toBe(900)
+  })
+
+  // Flat shape: Together documents non-reasoning models returning cached prompt
+  // tokens FLAT at the top level of `usage`. The SDK reads only the nested shape,
+  // so it reports cacheReadTokens=0; `raw` still carries the flat value, which the
+  // fallback must pick up.
+  test("falls back to flat usage.cached_tokens when the SDK reports 0", () => {
+    const usage = {
+      inputTokens: 1000,
+      outputTokens: 10,
+      totalTokens: 1010,
+      inputTokenDetails: { noCacheTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      outputTokenDetails: { textTokens: 10, reasoningTokens: 0 },
+      raw: { prompt_tokens: 1000, completion_tokens: 10, total_tokens: 1010, cached_tokens: 100 },
+    } as unknown as Parameters<typeof SessionNs.getUsage>[0]["usage"]
+
+    const result = SessionNs.getUsage({ model, usage })
+    expect(result.tokens.cache.read).toBe(100)
+    expect(result.tokens.input).toBe(900)
+  })
+
+  // A provider whose raw usage has no flat field must stay at 0 (no false positives).
+  test("does not invent cache reads when no shape is present", () => {
+    const usage = {
+      inputTokens: 1000,
+      outputTokens: 10,
+      totalTokens: 1010,
+      inputTokenDetails: { noCacheTokens: 1000, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      outputTokenDetails: { textTokens: 10, reasoningTokens: 0 },
+      raw: { prompt_tokens: 1000, completion_tokens: 10, total_tokens: 1010 },
+    } as unknown as Parameters<typeof SessionNs.getUsage>[0]["usage"]
+
+    const result = SessionNs.getUsage({ model, usage })
+    expect(result.tokens.cache.read).toBe(0)
+    expect(result.tokens.input).toBe(1000)
+  })
+})
+
 describe("Session", () => {
   test("remove works without an instance", async () => {
     await using tmp = await tmpdir({ git: true })

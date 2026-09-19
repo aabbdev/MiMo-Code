@@ -390,8 +390,20 @@ export const getUsage = (input: { model: Provider.Model; usage: LanguageModelUsa
   const outputTokens = safe(input.usage.outputTokens ?? 0)
   const reasoningTokens = safe(input.usage.outputTokenDetails?.reasoningTokens ?? input.usage.reasoningTokens ?? 0)
 
+  // Some providers report cached prompt tokens FLAT at the top level of `usage`
+  // (`usage.cached_tokens`) instead of the nested `prompt_tokens_details.cached_tokens`.
+  // Together AI documents BOTH shapes — non-reasoning models use the flat one — and
+  // warns that a client reading only one shape "returns 0 for all others (with no
+  // error message)". The AI SDK's openai-compatible/togetherai usage converter reads
+  // only the nested shape, so without this fallback the cache-read count (and thus the
+  // reported cache-hit rate) is silently 0 even though the provider did cache and did
+  // apply its cache-read discount. `raw` is the provider's own usage object.
+  // See .mimocode/plans/1789769242567-proud-island.md.
+  const flatCachedTokens = input.usage.raw?.cached_tokens
   const cacheReadInputTokens = safe(
-    input.usage.inputTokenDetails?.cacheReadTokens ?? input.usage.cachedInputTokens ?? 0,
+    input.usage.inputTokenDetails?.cacheReadTokens ||
+      input.usage.cachedInputTokens ||
+      (typeof flatCachedTokens === "number" ? flatCachedTokens : 0),
   )
   const cacheWriteInputTokens = safe(
     Number(
