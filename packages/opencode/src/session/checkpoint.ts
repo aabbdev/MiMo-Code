@@ -446,6 +446,19 @@ function aggregateWriterCacheMetrics(
 export type TryStartCheckpointWriterInput = {
   sessionID: SessionID
   model: { providerID: string; modelID: string }
+  /**
+   * Optional model override for the writer TURN itself (typically the small /
+   * lite tier, resolved by the caller via `Provider.getSmallModel` so this layer
+   * needs no Provider dependency).
+   *
+   * When set, the writer also switches to DELTA mode unless the user explicitly
+   * configured `checkpoint.fork`: fork mode inherits the parent's whole prefix
+   * for prefix-cache reuse ON THE PARENT MODEL — pointless on a different model,
+   * and likely unaffordable on a smaller one whose window may not hold it. Delta
+   * mode hands the writer its own system/tools plus only the messages since the
+   * last checkpoint.
+   */
+  writerModel?: { providerID: string; modelID: string }
   promptOps: ActorPromptOps
 }
 
@@ -549,7 +562,7 @@ export interface Interface {
        */
       boundary?: MessageID
     },
-  ) => Effect.Effect<{ text: string; hasActivity: boolean }>
+  ) => Effect.Effect<{ text: string; durableText: string; liveText: string; hasActivity: boolean }>
 
   readonly lastBoundary: (sessionID: SessionID) => Effect.Effect<MessageID | undefined>
 
@@ -803,7 +816,16 @@ export const layer: Layer.Layer<
       // reuse. Users who need cold-start delta-only behavior can set
       // `checkpoint.fork: false` in their config.
       const cfg = yield* config.get()
-      const forkMode = cfg.checkpoint?.fork ?? true
+      // A writer-model override (usually the small/lite tier) forces DELTA mode
+      // unless the user explicitly set `checkpoint.fork`: fork mode inherits the
+      // parent's whole prefix for prefix-cache reuse ON THE PARENT MODEL, which
+      // is pointless on a different model and likely unaffordable on a smaller
+      // one whose window may not hold it. Delta mode gives the writer its own
+      // system/tools and only the messages since the last checkpoint.
+      const explicitFork = cfg.checkpoint?.fork
+      const writerModel = input.writerModel ?? input.model
+      const forkMode =
+        input.writerModel !== undefined && explicitFork === undefined ? false : (explicitFork ?? true)
 
       const parentRow = yield* Effect.sync(() =>
         Database.use((d) =>
@@ -923,8 +945,8 @@ export const layer: Layer.Layer<
             const writerPrefix = yield* buildPrefix({
               sessionID: input.sessionID,
               agentName: "checkpoint-writer",
-              providerID: input.model.providerID,
-              modelID: input.model.modelID,
+              providerID: writerModel.providerID,
+              modelID: writerModel.modelID,
               msgs: delta,
             })
 
@@ -935,8 +957,8 @@ export const layer: Layer.Layer<
               parentPermission: writerPrefix.parentPermission,
               watermarkMsgID: endMessageID as MessageID,
               model: {
-                providerID: input.model.providerID as ProviderID,
-                modelID: input.model.modelID as ModelID,
+                providerID: writerModel.providerID as ProviderID,
+                modelID: writerModel.modelID as ModelID,
               },
             } satisfies ForkContext
           })
@@ -986,8 +1008,8 @@ export const layer: Layer.Layer<
         context: "full",
         tools: ["read", "write", "edit", "apply_patch", "glob", "grep", "task"],
         model: {
-          providerID: input.model.providerID as ProviderID,
-          modelID: input.model.modelID as ModelID,
+          providerID: writerModel.providerID as ProviderID,
+          modelID: writerModel.modelID as ModelID,
         },
         background: true,
         forkContext: forkCtx,
@@ -1267,7 +1289,7 @@ export const layer: Layer.Layer<
       // message-v2.ts populates info.agentID from agent_id column), and the
       // runLoop calls this with that value. Treating "main" as subagent here
       // would skip rebuild → fall through to F39 compaction → context loss.
-      if (opts?.agentID && opts.agentID !== "main") return { text: "", hasActivity: false }
+      if (opts?.agentID && opts.agentID !== "main") return { text: "", durableText: "", liveText: "", hasActivity: false }
 
       // Decide whether a usable checkpoint exists using the WATERMARK
       // (last_checkpoint_message_id), not the on-disk file's text. The writer's
@@ -1406,20 +1428,30 @@ export const layer: Layer.Layer<
         actors.length === 0 &&
         recentUserEntries.length === 0
       ) {
-        return { text: "", hasActivity: false }
+        return { text: "", durableText: "", liveText: "", hasActivity: false }
       }
 
-      const lines: string[] = []
+      // Two blocks, DURABLE FIRST. The rebuilt request prefix is
+      // `[system, tools, boundary-durable, boundary-live, tail]`. The durable
+      // block (project/global memory, session notes, memory index) is
+      // byte-stable across rebuilds — those files change rarely — while the live
+      // block (tasks ledger, checkpoint body, actors, recent user input,
+      // activity, framing) changes every epoch. Keeping durable first lets the
+      // provider reuse the cached prefix up to the live block, so a rebuild's
+      // miss covers only the live state + tail instead of the whole rebuilt
+      // context. Content is unchanged — only its order splits.
+      const durableLines: string[] = []
+      const liveLines: string[] = []
 
       // F17: Explicit "already loaded" header. Anchors the active recall
       // protocol's "look for this header" instruction in buildMemoryInstructions.
       // File-backed sections are H1 + `File:` path; their ## children belong
       // to that file. Non-file sections are also H1 so nothing nests under
       // the previous file by accident.
-      lines.push(
+      durableLines.push(
         "The sections below are auto-loaded session context already in this message. File-backed sections list their path on a `File:` line — Grep that path for specific facts; do not Read the whole file again.",
       )
-      lines.push("")
+      durableLines.push("")
 
       // Section: tasks ledger (hierarchical with subtasks).
       const taskLines: string[] = []
@@ -1448,11 +1480,11 @@ export const layer: Layer.Layer<
         }
         taskLines.push(truncate(ledgerLines.join("\n"), caps.tasks_ledger ?? 2000))
       }
-      pushSection(lines, "Tasks ledger", taskLines.join("\n"))
+      pushSection(liveLines, "Tasks ledger", taskLines.join("\n"))
 
       // File-backed: session checkpoint body.
       if (checkpointText.trim()) {
-        pushSection(lines, "Session checkpoint", checkpointText, checkpointPath(sessionID))
+        pushSection(liveLines, "Session checkpoint", checkpointText, checkpointPath(sessionID))
       }
 
       // Active actors (DB/registry, not a file).
@@ -1466,12 +1498,12 @@ export const layer: Layer.Layer<
           actorLines.push(line)
           actorBudget -= cost
         }
-        pushSection(lines, "Active actors", actorLines.join("\n"))
+        pushSection(liveLines, "Active actors", actorLines.join("\n"))
       }
 
       // Recent user input (verbatim, FIFO, budget-bounded).
       if (recentUserEntries.length > 0) {
-        pushSection(lines, "Recent user input (verbatim)", recentUserEntries.join("\n"))
+        pushSection(liveLines, "Recent user input (verbatim)", recentUserEntries.join("\n"))
       }
 
       // File-backed: project / global memory and session notes.
@@ -1479,13 +1511,13 @@ export const layer: Layer.Layer<
         // Not "Project memory": that reads like session memory's sibling and
         // collides with "this session has memory at …". This section is the
         // cross-session durable knowledge file (MEMORY.md) only.
-        pushSection(lines, "Project durable knowledge", memoryText, memoryPath(projectID))
+        pushSection(durableLines, "Project durable knowledge", memoryText, memoryPath(projectID))
       }
       if (globalText.trim()) {
-        pushSection(lines, "Global memory", globalText, globalMemoryPath())
+        pushSection(durableLines, "Global memory", globalText, globalMemoryPath())
       }
       if (notesText.trim()) {
-        pushSection(lines, "Session notes", notesText, notesPath(sessionID))
+        pushSection(durableLines, "Session notes", notesText, notesPath(sessionID))
       }
 
       // Section 8: memory keys index (paths only, omit already-pushed).
@@ -1519,20 +1551,23 @@ export const layer: Layer.Layer<
           db.select({ path: MemoryFtsTable.path }).from(MemoryFtsTable).where(scopeFilter).all(),
         ),
       )
+      // SORTED: the durable block must be byte-stable across rebuilds for the
+      // cache prefix to be reused, so no DB row order may leak into it.
       const keyEntries = scopedPaths
         .map((r) => r.path)
         .filter((p) => !pushedPaths.has(p) && !p.includes(`${path.sep}checkpoint${path.sep}learning-`))
         .map((p) => p.replace(memoryRoot + path.sep, ""))
+        .sort()
       if (keyEntries.length > 0) {
-        lines.push("# Memory keys index")
+        durableLines.push("# Memory keys index")
         let kBudget = caps.memory_titles ?? 500
         for (const entry of keyEntries) {
           const cost = Token.estimate(entry)
           if (kBudget - cost < 0) break
-          lines.push(`- ${entry}`)
+          durableLines.push(`- ${entry}`)
           kBudget -= cost
         }
-        lines.push("")
+        durableLines.push("")
       }
 
       // Section: Recent activity — messages that already exist after the
@@ -1554,8 +1589,8 @@ export const layer: Layer.Layer<
           const activity = renderTailDigest(tail)
           if (activity) {
             hasActivity = true
-            lines.push("")
-            lines.push(activity)
+            liveLines.push("")
+            liveLines.push(activity)
           }
         }
       }
@@ -1563,8 +1598,8 @@ export const layer: Layer.Layer<
       // Section 10: seam framing. Only claim a Recent activity list when one
       // was actually rendered — a silent render bail would otherwise leave
       // prose pointing at a section that does not exist.
-      lines.push("")
-      lines.push(
+      liveLines.push("")
+      liveLines.push(
         hasActivity
           ? "This session is continued from a checkpoint. The blocks above cover earlier history and the recent activity list. Resume the last task from that list and any live messages after it. Do not recap this dump."
           : "This session is continued from a checkpoint. The blocks above cover earlier history. Resume the last task from the most recent live messages. Do not recap this dump.",
@@ -1588,12 +1623,17 @@ export const layer: Layer.Layer<
           }
         })()
         if (reminder) {
-          lines.push("")
-          lines.push(reminder)
+          liveLines.push("")
+          liveLines.push(reminder)
         }
       }
 
-      return { text: lines.join("\n"), hasActivity }
+      // Durable block is emitted FIRST so the cached prefix survives a rebuild
+      // whenever the durable files are unchanged; `text` keeps the historical
+      // durable+live ordering for consumers that want the whole context.
+      const durableText = durableLines.join("\n")
+      const liveText = liveLines.join("\n")
+      return { text: `${durableText}\n${liveText}`, durableText, liveText, hasActivity }
     })
 
     const lastBoundary = Effect.fn("SessionCheckpoint.lastBoundary")(function* (sessionID: SessionID) {
@@ -1661,7 +1701,7 @@ export const layer: Layer.Layer<
         agentID: input.agentID,
         digestUpTo: input.digestUpTo,
         boundary: input.boundary,
-      }).pipe(Effect.catch(() => Effect.succeed({ text: "", hasActivity: false })))
+      }).pipe(Effect.catch(() => Effect.succeed({ text: "", durableText: "", liveText: "", hasActivity: false })))
       if (!rendered.text) return false
 
       const indexText = yield* renderIndex(input.sessionID).pipe(Effect.catch(() => Effect.succeed("")))
@@ -1691,37 +1731,38 @@ export const layer: Layer.Layer<
         ...(input.digestUpTo && hasActivity ? { digestUpTo: input.digestUpTo } : {}),
       })
 
-      if (indexText) {
+      // DURABLE block first — see renderRebuildContext. Byte-stable across
+      // rebuilds while the memory/notes files are unchanged, so the provider
+      // reuses the cached prefix up to the live block; a rebuild's miss then
+      // covers only live state + tail. The memory index is durable, so it rides
+      // with this block rather than being emitted separately.
+      const durableContent = [indexText, rendered.durableText].filter((part) => part && part.trim()).join("\n")
+      if (durableContent) {
         yield* session.updatePart({
           id: PartID.ascending(),
           messageID: msg.id,
           sessionID: input.sessionID,
           type: "text",
           synthetic: true,
-          text: indexText,
+          text: durableContent,
         })
       }
-
-      yield* session.updatePart({
-        id: PartID.ascending(),
-        messageID: msg.id,
-        sessionID: input.sessionID,
-        type: "text",
-        synthetic: true,
-        text: rendered.text,
-      })
 
       const actorsText = yield* actorRegistry
         .renderForAgent(input.sessionID)
         .pipe(Effect.catch(() => Effect.succeed("")))
-      if (actorsText) {
+
+      // LIVE block — current state, superseded at the next epoch. Placed AFTER
+      // the durable block so its churn cannot invalidate the cached prefix.
+      const liveContent = [rendered.liveText, actorsText].filter((part) => part && part.trim()).join("\n")
+      if (liveContent) {
         yield* session.updatePart({
           id: PartID.ascending(),
           messageID: msg.id,
           sessionID: input.sessionID,
           type: "text",
           synthetic: true,
-          text: actorsText,
+          text: liveContent,
         })
       }
 
@@ -1754,10 +1795,25 @@ export const layer: Layer.Layer<
         return true
       }
       let cleared = 0
+      let reasoningCleared = 0
       for (const m of allMsgs) {
         if (m.info.id === msg.id) continue
         if (m.info.time.created <= boundaryTime) continue
         for (const part of m.parts) {
+          // #3 — PURGE AT THE EPOCH BOUNDARY. The surviving tail's reasoning is
+          // dropped here because this is the ONE moment it is free: the rebuild
+          // already invalidates the prompt cache, so clearing bytes now costs no
+          // extra miss. The ordinary purge (`stripNonEssential`) is gated on a
+          // COLD cache and therefore never runs while a session stays warm
+          // (measured 99% cache-read), which is how reasoning used to accumulate
+          // for the entire life of a session. Emptied reasoning is stripped at
+          // send time for the providers that need it (transform stripsEmptyParts).
+          if (part.type === "reasoning") {
+            if (part.text.length === 0) continue
+            yield* session.updatePart({ ...part, text: "" })
+            reasoningCleared += 1
+            continue
+          }
           if (part.type !== "tool") continue
           if (!COMPACTABLE_TOOL_NAMES.has(part.tool)) continue
           if (part.state.status !== "completed") continue
@@ -1767,8 +1823,8 @@ export const layer: Layer.Layer<
           cleared += 1
         }
       }
-      if (cleared > 0) {
-        log.info("rebuild microcompact", { sessionID: input.sessionID, cleared })
+      if (cleared > 0 || reasoningCleared > 0) {
+        log.info("rebuild microcompact", { sessionID: input.sessionID, cleared, reasoningCleared })
       }
 
       return true

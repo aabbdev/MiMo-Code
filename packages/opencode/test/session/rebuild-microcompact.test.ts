@@ -90,6 +90,40 @@ async function seedAssistantWithTool(
   return { msg, part }
 }
 
+async function seedAssistantWithReasoning(sessionID: SessionID, time: number, text: string) {
+  const msg = await Effect.runPromise(
+    SessionNs.Service.use((s) =>
+      s.updateMessage({
+        id: MessageID.ascending(),
+        role: "assistant",
+        sessionID,
+        agent: "build",
+        parentID: MessageID.ascending(),
+        providerID: ref.providerID,
+        modelID: ref.modelID,
+        mode: "build",
+        path: { cwd: "/", root: "/" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: time },
+      }),
+    ).pipe(Effect.provide(SessionNs.defaultLayer)),
+  )
+  await Effect.runPromise(
+    SessionNs.Service.use((s) =>
+      s.updatePart({
+        id: PartID.ascending(),
+        messageID: msg.id,
+        sessionID,
+        type: "reasoning",
+        text,
+        time: { start: time, end: time + 1 },
+      }),
+    ).pipe(Effect.provide(SessionNs.defaultLayer)),
+  )
+  return { msg }
+}
+
 describe("rebuild microcompact", () => {
   it.live(
     "clears completed compactable tool_result strictly newer than boundary; preserves non-compactable and pre-boundary",
@@ -312,6 +346,51 @@ describe("rebuild microcompact", () => {
         // Both should be PRESERVED — fail-closed prevents whole-DB clear.
         expect(compactedOf(findTool(a.msg.id))).toBeUndefined()
         expect(compactedOf(findTool(b.msg.id))).toBeUndefined()
+      }),
+    ),
+  )
+
+  // #3 — the boundary is the one moment compression is FREE (the rebuild already
+  // breaks the prompt cache). Reasoning of the surviving tail is dropped there,
+  // which the ordinary purge cannot do: `stripNonEssential` is gated on a COLD
+  // cache and never runs while a session stays warm.
+  it.live(
+    "#3 clears reasoning strictly newer than the boundary; preserves pre-boundary reasoning",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const cp = yield* SessionCheckpoint.Service
+        const info = yield* ssn.create({})
+
+        yield* Effect.promise(async () => {
+          await fs.mkdir(checkpointPath(info.id).replace(/\/[^/]+$/, ""), { recursive: true })
+          await Bun.write(checkpointPath(info.id), "## §1 Active intent\n\nreasoning purge test\n")
+        })
+
+        const t0 = 1_700_000_000_000
+        const pre = yield* Effect.promise(() => seedAssistantWithReasoning(info.id, t0, "PRE_THINKING"))
+        const post = yield* Effect.promise(() => seedAssistantWithReasoning(info.id, t0 + 100, "POST_THINKING"))
+
+        const inserted = yield* cp.insertRebuildBoundary({
+          sessionID: info.id,
+          boundary: pre.msg.id,
+          agent: "build",
+          model: { providerID: "anthropic", modelID: "claude" },
+          boundaryCreatedAt: t0 + 50,
+        })
+        expect(inserted).toBe(true)
+
+        const all = yield* ssn.messages({ sessionID: info.id })
+        const reasoningOf = (id: typeof pre.msg.id) => {
+          const part = all.find((m) => m.info.id === id)?.parts.find((p) => p.type === "reasoning")
+          return part && part.type === "reasoning" ? part.text : undefined
+        }
+
+        // Pre-boundary reasoning is preserved (its messages are dropped wholesale
+        // by the replay, so there is nothing to gain by touching them here).
+        expect(reasoningOf(pre.msg.id)).toBe("PRE_THINKING")
+        // Post-boundary (surviving tail) reasoning is purged.
+        expect(reasoningOf(post.msg.id)).toBe("")
       }),
     ),
   )

@@ -27,27 +27,24 @@ const DEFAULT_CACHE_TTL = 300_000
 const CHECKPOINT_RESERVED = 13_000
 
 /**
- * Default checkpoint thresholds by context window size.
+ * Default checkpoint thresholds.
  *
- * Schedule (Part 2 density):
- *   < 25K          → []                    (subsystem disabled)
- *   25K ≤ w ≤ 200K → 4 triggers @ 20%      (mid-tier models)
- *   200K < w ≤ 500K → 9 triggers @ 10%     (extended-context models)
- *   w > 500K        → 18 triggers @ 5%     (1M+ window models)
+ * A flat ladder of three triggers — 40% / 60% / 80% of the usable window —
+ * for every window large enough to host the subsystem (>= 25K). This is the
+ * default the config schema documents for `checkpoint.thresholds`, and it holds
+ * for ALL window sizes rather than scaling density with context size.
  *
- * Density mirrors cc's intent that writers fire often enough that overflow
- * almost always finds a fresh `checkpoint.md` to rebuild from (avoiding
- * fallback to lossy compaction). cc uses growth+toolcall triggers; we use
- * % of window for a simpler implementation that doesn't require new state.
- * See docs/superpowers/specs/2026-06-03-checkpoint-threshold-density-design.md.
+ * History: an earlier revision ramped density for large windows (4/9/18
+ * triggers at 20%/10%/5%). Measured against real session data, that ramp
+ * dominated cost: the checkpoint-writer became ~60% of all LLM calls and ~26%
+ * of processed tokens, and the extra rebuilds invalidated the prompt prefix
+ * far more often (a rebuild re-reads the whole context at full price). The
+ * documented default never changed to match, so the ramp was both expensive
+ * and undocumented. Removed so code and documentation agree.
  */
 export function defaultThresholdsFor(window: number): readonly string[] {
   if (window < 25_000) return []
-  if (window <= 200_000) return ["20%", "40%", "60%", "80%"]
-  if (window <= 500_000) {
-    return ["10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%"]
-  }
-  return Array.from({ length: 18 }, (_, i) => `${(i + 1) * 5}%`)
+  return ["40%", "60%", "80%"]
 }
 
 function isCacheCold(model?: Provider.Model, lastAssistantTime?: number): boolean {
@@ -152,6 +149,8 @@ export interface Interface {
     tokens: MessageV2.Assistant["tokens"]
     promptOps: ActorPromptOps
     agentID?: string
+    /** Optional writer-turn model override (small/lite tier); see TryStartCheckpointWriterInput. */
+    writerModel?: { providerID: string; modelID: string }
   }) => Effect.Effect<void>
   /** Clear the crossed-threshold state for a session (e.g. after discard+rebuild). */
   readonly resetThresholds: (sessionID: SessionID) => Effect.Effect<void>
@@ -244,6 +243,7 @@ export const layer: Layer.Layer<
       tokens: MessageV2.Assistant["tokens"]
       promptOps: ActorPromptOps
       agentID?: string
+      writerModel?: { providerID: string; modelID: string }
     }) {
       // Checkpoint serves main/peer only; subagents use per-actor compaction
       // (independent layers — see 2026-05-22-checkpoint-v8-design.md:71), and
@@ -279,6 +279,10 @@ export const layer: Layer.Layer<
       const cfg = yield* config.get()
       const windowSize = usable({ cfg, model: input.model })
       if (windowSize === 0) return
+      // `usable()` already reflects `compaction.max_context` — the canonical
+      // "compact earlier than the window" knob — so the ladder is naturally a
+      // fraction of the CONFIGURED budget when one is set, and of the window
+      // otherwise. No separate epoch plumbing is needed.
       const raw = cfg.checkpoint?.thresholds ?? defaultThresholdsFor(windowSize)
 
       // resolveThresholds throws on invalid config; we let that propagate so
@@ -322,6 +326,7 @@ export const layer: Layer.Layer<
           .tryStartCheckpointWriter({
             sessionID: input.sessionID,
             model: { providerID: input.model.providerID, modelID: input.model.id },
+            writerModel: input.writerModel,
             promptOps: input.promptOps,
           })
           .pipe(Effect.catch(() => Effect.succeed<"started" | "queued" | "skipped">("skipped")))

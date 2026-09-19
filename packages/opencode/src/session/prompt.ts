@@ -261,6 +261,21 @@ const MAX_GOAL_REACT = 12
 const REPEATED_STEP_THRESHOLD = 3
 
 /**
+ * Hard step cap for bounded-computation agents (native + hidden: `title`,
+ * `summary`, `checkpoint-writer`). These run with NO human in the loop, so a
+ * runLoop whose stream never settles has nothing to stop it: observed in the
+ * wild as 15,757 `finish`-less assistant messages created under a SINGLE user
+ * turn over ~41 hours (a checkpoint-writer child session), each a zero-token
+ * no-op. A normal run of these agents uses well under 30 steps, so this cap is
+ * a pure safety net — it only ever fires on a pathological loop — and it
+ * guarantees the turn ends. `agent.steps` is NOT a substitute: a missing value
+ * means `Infinity`, and even an explicit one only appends a nudge prompt
+ * (`toolChoice: "none"`) without hard-breaking a model that keeps returning
+ * empty output.
+ */
+const BOUNDED_COMPUTATION_MAX_STEPS = 100
+
+/**
  * Deterministic JSON serialization with sorted object keys, so that two
  * semantically-identical tool inputs produce the same string regardless of the
  * order the model happened to emit the keys in. `JSON.stringify` preserves
@@ -731,6 +746,29 @@ export const layer = Layer.effect(
       }),
     )
 
+    // Resolve the small/lite model for the checkpoint-writer turn.
+    //
+    // OPT-IN: only when the user explicitly configured `small_model` or a
+    // `model_groups.lite` tier. Without that, `getSmallModel` falls back to a
+    // built-in lite tier that may differ from the foreground model, and silently
+    // switching the writer's model (and thus its fork/delta mode) would be a
+    // behaviour change nobody asked for. Returns undefined when nothing is
+    // configured OR the resolved model equals the foreground model — in both
+    // cases the writer keeps its existing parent-model fork behaviour.
+    const resolveWriterModel = Effect.fn("SessionPrompt.resolveWriterModel")(function* (foreground: {
+      providerID: string
+      id: string
+    }) {
+      const cfg = yield* config.get()
+      if (cfg.small_model === undefined && cfg.model_groups?.lite === undefined) return undefined
+      const small = yield* provider
+        .getSmallModel(foreground.providerID as ProviderID)
+        .pipe(Effect.catch(() => Effect.succeed(undefined)))
+      if (!small) return undefined
+      if (small.providerID === foreground.providerID && small.id === foreground.id) return undefined
+      return { providerID: small.providerID, modelID: small.id }
+    })
+
     const runner = Effect.fn("SessionPrompt.runner")(function* () {
       return yield* EffectBridge.make()
     })
@@ -867,7 +905,13 @@ export const layer = Layer.effect(
         })
         .pipe(Effect.catch(() => Effect.succeed(false)))
 
-      if (inserted) yield* prune.resetThresholds(input.sessionID)
+      if (inserted) {
+        yield* prune.resetThresholds(input.sessionID)
+        // A rebuild discards + recomposes the working set, so the tool-output
+        // budget starts over. This is the ONLY point the counter resets — within
+        // an epoch it only ever grows, which is what keeps the prefix stable.
+        yield* truncate.reset(input.sessionID)
+      }
       return inserted
     })
 
@@ -1015,6 +1059,7 @@ export const layer = Layer.effect(
           .tryStartCheckpointWriter({
             sessionID: input.sessionID,
             model: { providerID: input.model.providerID, modelID: input.model.id },
+            writerModel: yield* resolveWriterModel(input.model),
             promptOps: {} as never,
           })
           .pipe(Effect.catch(() => Effect.succeed<"started" | "queued" | "skipped">("skipped")))
@@ -4645,6 +4690,18 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           const isBoundedComputation =
             agent?.native === true && agent?.hidden === true
 
+          // Hard termination backstop — see BOUNDED_COMPUTATION_MAX_STEPS. Only
+          // bounded-computation agents are subject to it; normal agents keep
+          // their existing (optionally unbounded) runLoop.
+          if (isBoundedComputation && step > BOUNDED_COMPUTATION_MAX_STEPS) {
+            yield* slog.warn("bounded computation agent hit step cap — ending turn to prevent a runaway loop", {
+              step,
+              agent: agent?.name,
+              sessionID,
+            })
+            break
+          }
+
           // Fire background checkpoint writers for any newly-crossed thresholds
           // based on the latest completed assistant message's tokens. These
           // thresholds only keep the checkpoint fresh; `overflowCheck` below is
@@ -4658,6 +4715,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 tokens: lastFinished.tokens,
                 promptOps: fireOps,
                 agentID: lastUser.agentID,
+                writerModel: yield* resolveWriterModel(model),
               })
               .pipe(Effect.ignore)
           }

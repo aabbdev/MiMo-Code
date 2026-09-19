@@ -214,3 +214,49 @@ describe("SessionCompaction.create preserves messages", () => {
     ),
   )
 })
+
+describe("SessionCheckpoint.insertRebuildBoundary durable/live ordering", () => {
+  // The durable block must precede the live block so a rebuild can reuse the
+  // provider's cached prefix up to the live state. See renderRebuildContext's
+  // "DURABLE FIRST" note and .mimocode/plans/1789769242567-proud-island.md.
+  it.live(
+    "emits the durable block BEFORE the live block (cache-prefix stability)",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const ssn = yield* SessionNs.Service
+          const cp = yield* SessionCheckpoint.Service
+          const info = yield* ssn.create({})
+
+          const m1 = yield* Effect.promise(() => seedUserMessage(info.id, "turn one"))
+          yield* Effect.promise(() => seedUserMessage(info.id, "turn two"))
+
+          // Real checkpoint on disk → its body lands in the LIVE block.
+          const cpPath = checkpointPath(info.id)
+          yield* Effect.promise(() => fs.mkdir(path.dirname(cpPath), { recursive: true }))
+          yield* Effect.promise(() =>
+            fs.writeFile(cpPath, "# Session checkpoint\n\n## §1 Active intent\nLIVE_CHECKPOINT_MARKER\n"),
+          )
+
+          const inserted = yield* cp.insertRebuildBoundary({
+            sessionID: info.id,
+            boundary: m1.id,
+            agent: "build",
+            model: { providerID: "anthropic", modelID: "claude" },
+          })
+          expect(inserted).toBe(true)
+
+          const boundary = (yield* ssn.messages({ sessionID: info.id })).at(-1)!
+          const texts = boundary.parts.flatMap((p) => (p.type === "text" ? [p.text] : []))
+          const durableIdx = texts.findIndex((t) => t.includes("auto-loaded session context"))
+          const liveIdx = texts.findIndex((t) => t.includes("LIVE_CHECKPOINT_MARKER"))
+
+          expect(durableIdx).toBeGreaterThanOrEqual(0)
+          expect(liveIdx).toBeGreaterThanOrEqual(0)
+          // Durable FIRST — this is the cache-prefix guarantee.
+          expect(durableIdx).toBeLessThan(liveIdx)
+        }),
+      { outsideGit: true },
+    ),
+  )
+})

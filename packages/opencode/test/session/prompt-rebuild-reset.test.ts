@@ -56,8 +56,13 @@ describe("F1 — rebuild resets checkpoint thresholds", () => {
           Bun.file(`${import.meta.dir}/../../src/session/prompt.ts`).text(),
         )
         expect(promptSrc).not.toContain("Do NOT reset thresholds here")
-        // (a) shared helper resets thresholds on a successful insert.
-        expect(promptSrc).toMatch(/if\s*\(inserted\)\s+yield\*\s+prune\.resetThresholds\(input\.sessionID\)/)
+        // (a) shared helper resets thresholds on a successful insert. The shape
+        // moved from a single-statement `if (inserted) yield* …` to a block when
+        // the rebuild also resets the tool-output working-set budget
+        // (`truncate.reset`); the invariant is unchanged.
+        expect(promptSrc).toMatch(
+          /if\s*\(inserted\)\s*\{[\s\S]*?yield\*\s+prune\.resetThresholds\(input\.sessionID\)/,
+        )
         // (b) site-1 guards on the helper's outcome, then skips + continues.
         expect(promptSrc).toMatch(
           /const\s+attempt:\s*RebuildAttempt\s*=\s*yield\*\s+rebuildEnsuringCheckpoint\([\s\S]*?\)\s*\n\s*if\s*\(attempt\s*===\s*"rebuilt"\)\s*\{\s*\n\s*skipOverflowCheck\s*=\s*true\s*\n\s*continue/,

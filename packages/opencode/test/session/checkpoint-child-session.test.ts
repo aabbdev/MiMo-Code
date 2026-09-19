@@ -37,7 +37,10 @@ const ref = {
 // Closure-shared state so tests can inspect spawn behavior. Mirrors
 // hangingActor in checkpoint-drain.test.ts but adds counter access plus
 // "settle the next outcome" knobs (success for T3, failure for T9/T10).
-const spawnLog: { count: number; lastInput?: { sessionID: string; parentSessionID?: string; mode: string } } = { count: 0 }
+const spawnLog: {
+  count: number
+  lastInput?: { sessionID: string; parentSessionID?: string; mode: string; model?: { providerID: string; modelID: string } }
+} = { count: 0 }
 const settleNextSuccess: { value: boolean } = { value: false }
 // T10 uses explicit (test-driven) settlement to avoid the documented race
 // in prune.ts:321-329 (settle watcher in checkpoint.ts deletes writers Map
@@ -65,6 +68,7 @@ const recordingActor = Layer.effect(
             sessionID: input.sessionID,
             parentSessionID: input.parentSessionID,
             mode: input.mode,
+            model: input.model,
           }
           const outcome = yield* Deferred.make<AgentOutcome>()
           if (settleNextSuccess.value) {
@@ -440,11 +444,11 @@ describe("checkpoint writer child-session isolation", () => {
           id: ModelID.make("test-model"),
         })
         // Tokens above the FIRST threshold only (default thresholds for the
-        // fake model's 200K window: 20%/40%/60%/80% = 40K/80K/120K/160K).
+        // fake model's 200K window: 40%/60%/80% = 80K/120K/160K).
         // Staying at one crossed threshold keeps the 1-slot pending queue out
         // of the picture (checkpoint.ts:508-517).
         const oneOverFirstThreshold = {
-          input: 50_000,
+          input: 90_000,
           output: 0,
           reasoning: 0,
           cache: { read: 0, write: 0 },
@@ -526,6 +530,47 @@ describe("checkpoint writer child-session isolation", () => {
         expect(spawnLog.count).toBe(1)
       }),
       { config: { checkpoint: { fork: true } } },
+    ),
+  )
+
+  it.live(
+    "writerModel: an override routes the writer turn to that model (and switches to delta mode)",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        yield* resetSpawnLog
+        const svc = yield* SessionCheckpoint.Service
+        const { info } = yield* seedParentSession()
+
+        const outcome = yield* svc.tryStartCheckpointWriter({
+          sessionID: info.id,
+          model: { providerID: "test", modelID: "big-model" },
+          writerModel: { providerID: "test", modelID: "small-model" },
+          promptOps: {} as never,
+        })
+
+        expect(outcome).toBe("started")
+        expect(spawnLog.lastInput?.model).toEqual({ providerID: "test", modelID: "small-model" })
+      }),
+    ),
+  )
+
+  it.live(
+    "writerModel: without an override the writer keeps the foreground model",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        yield* resetSpawnLog
+        const svc = yield* SessionCheckpoint.Service
+        const { info } = yield* seedParentSession()
+
+        const outcome = yield* svc.tryStartCheckpointWriter({
+          sessionID: info.id,
+          model: { providerID: "test", modelID: "big-model" },
+          promptOps: {} as never,
+        })
+
+        expect(outcome).toBe("started")
+        expect(spawnLog.lastInput?.model).toEqual({ providerID: "test", modelID: "big-model" })
+      }),
     ),
   )
 

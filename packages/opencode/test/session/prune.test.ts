@@ -259,7 +259,7 @@ describe("SessionPrune.fireCheckpoints writer failure is not retried in place", 
         loadLatest: () => Effect.succeed(undefined),
         loadCheckpoints: () => Effect.succeed([]),
         renderIndex: () => Effect.succeed(""),
-        renderRebuildContext: () => Effect.succeed({ text: "", hasActivity: false }),
+        renderRebuildContext: () => Effect.succeed({ text: "", durableText: "", liveText: "", hasActivity: false }),
         lastBoundary: () => Effect.succeed(undefined),
         isWriterRunning: () => Effect.succeed(false),
         insertRebuildBoundary: () => Effect.succeed(false),
@@ -685,14 +685,8 @@ describe("SessionPrune.fireCheckpoints writer failure is not retried in place", 
   })
 })
 
-describe("defaultThresholdsFor (Part 2 density)", () => {
-  // Constants used in expected outputs; declared once so a typo in any one
-  // assertion is caught against a single source.
-  const FOUR_AT_20 = ["20%", "40%", "60%", "80%"] as const
-  const NINE_AT_10 = [
-    "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%",
-  ] as const
-  const EIGHTEEN_AT_5 = Array.from({ length: 18 }, (_, i) => `${(i + 1) * 5}%`)
+describe("defaultThresholdsFor", () => {
+  const THREE = ["40%", "60%", "80%"] as const
 
   test("window < 25K returns empty (subsystem disabled)", () => {
     expect(defaultThresholdsFor(0)).toEqual([])
@@ -700,36 +694,17 @@ describe("defaultThresholdsFor (Part 2 density)", () => {
     expect(defaultThresholdsFor(24_999)).toEqual([])
   })
 
-  test("25K ≤ window ≤ 200K uses [20%, 40%, 60%, 80%] (4 triggers @ 20%)", () => {
-    expect(defaultThresholdsFor(25_000)).toEqual(FOUR_AT_20)
-    expect(defaultThresholdsFor(50_000)).toEqual(FOUR_AT_20)
-    expect(defaultThresholdsFor(100_000)).toEqual(FOUR_AT_20)
-    expect(defaultThresholdsFor(150_000)).toEqual(FOUR_AT_20)
-    expect(defaultThresholdsFor(200_000)).toEqual(FOUR_AT_20)
-  })
-
-  test("200K < window ≤ 500K uses 9-tier [10%..90%]", () => {
-    expect(defaultThresholdsFor(200_001)).toEqual(NINE_AT_10)
-    expect(defaultThresholdsFor(300_000)).toEqual(NINE_AT_10)
-    expect(defaultThresholdsFor(400_000)).toEqual(NINE_AT_10)
-    expect(defaultThresholdsFor(500_000)).toEqual(NINE_AT_10)
-  })
-
-  test("window > 500K uses 18-tier [5%, 10%, ..., 90%]", () => {
-    expect(defaultThresholdsFor(500_001)).toEqual(EIGHTEEN_AT_5)
-    expect(defaultThresholdsFor(1_000_000)).toEqual(EIGHTEEN_AT_5)
-    expect(defaultThresholdsFor(2_000_000)).toEqual(EIGHTEEN_AT_5)
-  })
-
-  test("18-tier shape: starts at 5%, ends at 90%, 18 items, monotonic", () => {
-    const out = defaultThresholdsFor(1_000_000)
-    expect(out.length).toBe(18)
-    expect(out[0]).toBe("5%")
-    expect(out[8]).toBe("45%") // mid-array spot check (closes a generator-typo gap)
-    expect(out[out.length - 1]).toBe("90%")
-    const nums = out.map((s) => parseFloat(s.replace("%", "")))
-    for (let i = 1; i < nums.length; i++) {
-      expect(nums[i]).toBeGreaterThan(nums[i - 1])
+  test("every enabled window uses the flat [40%, 60%, 80%] ladder", () => {
+    // Density no longer scales with window size — the same three triggers apply
+    // to a 25K window and a 2M window. (Was 4/9/18 triggers by window size.)
+    for (const w of [25_000, 50_000, 100_000, 150_000, 200_000, 200_001, 300_000, 500_000, 1_000_000, 2_000_000]) {
+      expect(defaultThresholdsFor(w)).toEqual(THREE)
     }
+  })
+
+  test("matches the default documented for checkpoint.thresholds", () => {
+    // The config schema annotation promises exactly this default; if either side
+    // changes, this test must change with it so code and docs cannot drift.
+    expect(defaultThresholdsFor(1_000_000)).toEqual(["40%", "60%", "80%"])
   })
 })
