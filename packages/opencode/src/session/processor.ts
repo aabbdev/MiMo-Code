@@ -585,6 +585,21 @@ export const layer: Layer.Layer<
               usage: value.usage,
               metadata: value.providerMetadata,
             })
+            // Phase 0 prompt-cache diagnostics (temporary; see
+            // .mimocode/plans/1789769242567-proud-island.md). The raw provider
+            // report lets us separate "upstream didn't cache" (raw cached tokens
+            // are 0) from "SDK didn't surface the field" (raw field absent while
+            // the parsed cache.read below is also 0). Enable with
+            // `mimo --log-level DEBUG`.
+            log.debug("cache.usage", {
+              providerID: ctx.model.providerID,
+              modelID: ctx.model.id,
+              parsedCacheRead: usage.tokens.cache.read,
+              parsedCacheWrite: usage.tokens.cache.write,
+              parsedInput: usage.tokens.input,
+              raw: value.usage,
+              rawProviderMetadata: value.providerMetadata,
+            })
             ctx.assistantMessage.finish = value.finishReason
             ctx.assistantMessage.cost += usage.cost
             ctx.assistantMessage.tokens = usage.tokens

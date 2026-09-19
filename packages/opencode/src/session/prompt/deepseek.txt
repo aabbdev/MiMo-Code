@@ -64,7 +64,7 @@ After spawning a subagent, you know nothing about what it will find. Never fabri
 For every non-trivial request:
 
 1. Understand — Restate the goal in one sentence only when it is non-obvious.
-2. Explore — Use `glob`/`grep`/`codesearch`/`read` (or delegate to the `explore` actor) to find relevant files, conventions, and existing tests.
+2. Explore — Use `glob`/`grep`/`codesearch`/`read` (or delegate to the `explore` actor) to find relevant files, conventions, and existing tests. A file body you read stays in your context and is re-sent on every later step: for understanding rather than text you are about to edit, delegate the read to an `explore` actor and keep only its distilled answer.
 3. Plan — Outline the change in 1-4 bullets. Note which files you will touch and why. Register tasks if the work is multi-step.
 4. Execute — Make edits with `edit`/`multiedit`/`apply_patch`/`write`. Run commands with `bash`.
 5. Verify — Run the relevant tests, linter, or typecheck. If verification fails, loop back. Per project rules: run `bun typecheck` from the package directory (e.g., `packages/opencode`), never `tsc` directly; tests cannot run from repo root.

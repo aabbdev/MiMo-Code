@@ -129,18 +129,29 @@ function wrap<Parameters extends z.ZodType, Result extends Metadata>(
             },
           })
           const result = yield* execute(args, ctx)
-          if (result.metadata.truncated !== undefined) {
-            return result
-          }
           const agent = yield* agents.get(ctx.agent)
-          const truncated = yield* truncate.output(result.output, {}, agent)
+          // ALWAYS run the governor. `metadata.truncated` is the TOOL's own
+          // per-result cap — `read`, `bash` and `grep` all set it — which says
+          // nothing about the session's AGGREGATE working set. Returning early on
+          // it (as this used to) left the working-set budget inert for exactly
+          // the tools whose output accumulates, so a long session still piled
+          // every result into every request. The tool's own cap is honoured
+          // while the aggregate has room; the governor shrinks it only once the
+          // budget is spent.
+          const truncated = yield* truncate.output(
+            result.output,
+            result.metadata.truncated !== undefined ? { selfTruncated: true } : {},
+            agent,
+            ctx.sessionID,
+            ctx.actorID,
+          )
           return {
             ...result,
             output: truncated.content,
             metadata: {
               ...result.metadata,
-              truncated: truncated.truncated,
-              ...(truncated.truncated && { outputPath: truncated.outputPath }),
+              truncated: truncated.truncated || result.metadata.truncated === true,
+              ...(truncated.truncated ? { outputPath: truncated.outputPath } : {}),
             },
           }
         }).pipe(Effect.orDie, Effect.withSpan("Tool.execute", { attributes: attrs }))

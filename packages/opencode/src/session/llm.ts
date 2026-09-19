@@ -526,6 +526,22 @@ const live: Layer.Layer<
         mergeDeep(input.agent.options),
         mergeDeep(variant),
       )
+
+      // Phase 0 prompt-cache diagnostics (temporary; see
+      // .mimocode/plans/1789769242567-proud-island.md). Records whether this
+      // request can participate in provider prompt caching at all. Enable with
+      // `mimo --log-level DEBUG` and read ~/.local/share/mimocode/log/*.log.
+      // Pair with the `cache.usage` line in session/processor.ts (raw cached
+      // tokens) to separate "provider didn't cache" from "SDK didn't report it".
+      log.debug("cache.diagnostics", {
+        providerID: input.model.providerID,
+        modelID: input.model.id,
+        npm: input.model.api.npm,
+        small: input.small ?? false,
+        supportsCacheMarkers: ProviderTransform.supportsCacheMarkers(input.model),
+        cacheOptionKeys: Object.keys(options).filter((k) => k.toLowerCase().includes("cache")),
+      })
+
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
       // Workflow connectors mutate shared session/tool-executor state and may
       // ask permissions. They have no safe isolated title adapter.
@@ -771,6 +787,45 @@ const live: Layer.Layer<
           {},
         )
         .pipe(Effect.ignore)
+
+      // #4 — FIXED-OVERHEAD visibility. system + tool schemas are re-sent on EVERY
+      // call, so their size is paid per step; but they are also part of the cache
+      // prefix, so their MARGINAL cost is a cache read. Logging the split lets a
+      // "lazy tools" or "trim the prompt" change be judged on real bytes instead
+      // of intuition. Read it with script/cache-report.ts.
+      //
+      // Sizes are taken over `activeTools` — the schemas the provider is actually
+      // SENT — not over `tools`, which also holds lazily-reachable entries (MCP
+      // tools behind mcp_tool_search). Measuring `tools` overstated the block.
+      const toolSizes = activeTools
+        .map((name) => [name, JSON.stringify(tools[name] ?? {}).length] as const)
+        .toSorted((a, b) => b[1] - a[1])
+      const toolsChars = toolSizes.reduce((sum, [, size]) => sum + size, 0)
+      const lazyTools = Object.keys(tools).length - activeTools.length
+      l.debug("request.size", {
+        providerID: input.model.providerID,
+        modelID: input.model.id,
+        systemChars: system.join("\n\n").length,
+        toolCount: activeTools.length,
+        toolsChars,
+        lazyTools,
+        // The five heaviest advertised tools — the actionable half of the number.
+        largestTools: toolSizes
+          .slice(0, 5)
+          .map(([name, size]) => `${name}:${size}`)
+          .join(","),
+      })
+      if (Flag.MIMOCODE_TOOL_AUDIT) {
+        l.debug("tools.audit", {
+          providerID: input.model.providerID,
+          modelID: input.model.id,
+          systemChars: system.join("\n\n").length,
+          total: toolsChars,
+          count: toolSizes.length,
+          lazyTools,
+          sizes: toolSizes.map(([name, size]) => `${name}:${size}`).join(","),
+        })
+      }
 
       return streamText({
         onError(error) {

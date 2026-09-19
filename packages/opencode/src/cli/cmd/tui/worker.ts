@@ -1,6 +1,7 @@
 import { Installation } from "@/installation"
 import { Server } from "@/server/server"
 import { Log } from "@/util"
+import { levelFromArgv } from "@/util/log"
 import { Instance } from "@/project/instance"
 import { InstanceBootstrap } from "@/project/bootstrap"
 import { Rpc } from "@/util"
@@ -30,10 +31,11 @@ watchModelsCatalogReload({
 await Log.init({
   print: process.argv.includes("--print-logs"),
   dev: Installation.isLocal(),
-  level: (() => {
-    if (Installation.isLocal()) return "DEBUG"
-    return "INFO"
-  })(),
+  // Honour the CLI's --log-level: this runs in a Worker thread that shares
+  // process.argv, and hardcoding DEBUG-only-when-local meant an installed build
+  // silently logged at INFO and dropped every DEBUG line (including the
+  // prompt-cache instrumentation) no matter what the user asked for.
+  level: levelFromArgv(process.argv) ?? (Installation.isLocal() ? "DEBUG" : "INFO"),
 })
 
 Heap.start()

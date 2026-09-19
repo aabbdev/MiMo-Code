@@ -2,9 +2,11 @@ import { afterEach, describe, expect } from "bun:test"
 import path from "path"
 import fs from "fs/promises"
 import { Effect, Layer } from "effect"
+import z from "zod"
 import { Instance } from "../../src/project/instance"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
 import { ToolRegistry } from "../../src/tool"
+import { Flag } from "../../src/flag/flag"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -186,6 +188,48 @@ describe("tool.registry", () => {
         expect(matches).toHaveLength(1)
         expect(matches[0].description).toContain("Search locally available MCP tools")
         expect(matches[0].description).not.toContain("malicious replacement")
+      }),
+    ),
+  )
+})
+
+describe("tool.registry advertised-budget lock", () => {
+  /**
+   * Whole-block ceiling for the isolated (no MCP, no plugins) built-in set,
+   * measured as `description + JSON schema` per tool. Baseline when locked:
+   * 80,062 chars. The ceiling leaves ~10% headroom so a deliberate small
+   * addition passes while an accidental blow-up (a verbose new description, a
+   * schema that balloons) fails.
+   *
+   * Scope: this measures the DEFAULT flag set. An experimental run
+   * (MIMOCODE_EXPERIMENTAL) advertises extra tools and is out of scope.
+   */
+  const CEILING = 88_000
+
+  it.live("keeps the flag defaults that bound the tool block", () =>
+    Effect.gen(function* () {
+      // cron is opt-in: it is advertised on every call but used by almost no
+      // coding session, so it must not be in the default block (5,781 chars).
+      expect(Flag.MIMOCODE_EXPERIMENTAL_CRON).toBe(false)
+      // Lazy MCP tool search is a bigger win (-9.4k tokens/call with ~40 MCP
+      // tools) but stays OPT-IN: direct MCP exposure is a deliberate general
+      // default pinned by its own tests. Flipping it is a migration, not a
+      // tweak — see flag.ts.
+      expect(Flag.MIMOCODE_EXPERIMENTAL_MCP_TOOL_SEARCH).toBe(false)
+    }),
+  )
+
+  it.live("keeps the built-in advertised block under the ceiling", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        void dir
+        const registry = yield* ToolRegistry.Service
+        const defs = yield* registry.all()
+        const size = defs.reduce(
+          (total, def) => total + def.description.length + JSON.stringify(z.toJSONSchema(def.parameters)).length,
+          0,
+        )
+        expect(size).toBeLessThan(CEILING)
       }),
     ),
   )

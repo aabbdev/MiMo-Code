@@ -8,6 +8,25 @@ import z from "zod"
 export const Level = z.enum(["DEBUG", "INFO", "WARN", "ERROR"]).meta({ ref: "LogLevel", description: "Log level" })
 export type Level = z.infer<typeof Level>
 
+/**
+ * Read `--log-level <LEVEL>` / `--log-level=<LEVEL>` straight from an argv array.
+ *
+ * The TUI runs its server in a Bun Worker THREAD that re-runs `Log.init`. The
+ * thread shares `process.argv`, so it can honour the very same flag the CLI
+ * middleware reads — but it historically did not, hardcoding
+ * DEBUG-when-local / INFO otherwise. On an installed build that silently dropped
+ * EVERY DEBUG line from the worker, including the prompt-cache instrumentation
+ * (`cache.diagnostics` / `cache.usage` / `working-set cap applied`), so
+ * `--log-level DEBUG` had no effect on the process that actually runs sessions.
+ */
+export function levelFromArgv(argv: readonly string[] = process.argv): Level | undefined {
+  const index = argv.findIndex((arg) => arg === "--log-level" || arg.startsWith("--log-level="))
+  if (index < 0) return undefined
+  const token = argv[index]
+  const raw = (token.includes("=") ? token.slice(token.indexOf("=") + 1) : argv[index + 1])?.toUpperCase()
+  return raw !== undefined && Level.safeParse(raw).success ? (raw as Level) : undefined
+}
+
 const levelPriority: Record<Level, number> = {
   DEBUG: 0,
   INFO: 1,

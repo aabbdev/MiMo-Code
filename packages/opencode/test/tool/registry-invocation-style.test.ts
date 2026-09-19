@@ -31,6 +31,9 @@ describe("ToolRegistry.tools: invocation style resolution", () => {
           agent: build,
         })
         const ids = tools.map((tool) => tool.id)
+        // `cron` is deliberately absent: it is opt-in since the tool-block budget
+        // change (see Flag.MIMOCODE_EXPERIMENTAL_CRON), so under the default flags
+        // it is neither advertised nor named in the exec description.
         const nested = [
           "bash",
           "apply_patch",
@@ -44,7 +47,6 @@ describe("ToolRegistry.tools: invocation style resolution", () => {
           "plan_exit",
           "memory",
           "history",
-          "cron",
         ]
 
         expect(ids).toEqual(["exec"])

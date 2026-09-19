@@ -273,3 +273,154 @@ describe("Truncate", () => {
     )
   })
 })
+
+describe("Truncate working-set governor", () => {
+  const BUDGET_ENV = "MIMOCODE_WORKING_SET_BUDGET_BYTES"
+  // Flag reads process.env per access, so pinning the budget here is enough.
+  const withBudget = <A, E, R>(bytes: number, effect: Effect.Effect<A, E, R>) =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const prev = process.env[BUDGET_ENV]
+        process.env[BUDGET_ENV] = String(bytes)
+        return prev
+      }),
+      () => effect,
+      (prev) =>
+        Effect.sync(() => {
+          if (prev === undefined) delete process.env[BUDGET_ENV]
+          else process.env[BUDGET_ENV] = prev
+        }),
+    )
+
+  it.live("bounds the AGGREGATE inline output for a session without mutating earlier results", () =>
+    withBudget(
+      100 * 1024,
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const sessionID = "ses_working_set_test"
+        const chunk = "x".repeat(40 * 1024)
+
+        const first = yield* svc.output(chunk, {}, undefined, sessionID)
+        const second = yield* svc.output(chunk, {}, undefined, sessionID)
+        const third = yield* svc.output(chunk, {}, undefined, sessionID)
+        const fourth = yield* svc.output(chunk, {}, undefined, sessionID)
+
+        // 40 KiB, then 80 KiB of a 100 KiB budget → both fit whole.
+        expect(first.truncated).toBe(false)
+        expect(second.truncated).toBe(false)
+        // Only ~20 KiB left → the third is capped to what remains.
+        expect(third.truncated).toBe(true)
+        // Budget spent → stub cap; still spilled and reachable via Read.
+        expect(fourth.truncated).toBe(true)
+        if (fourth.truncated) expect(fourth.outputPath).toBeDefined()
+
+        // Earlier results are untouched: the bound was applied at insertion.
+        expect(first.content).toBe(chunk)
+        expect(second.content).toBe(chunk)
+        expect(Buffer.byteLength(fourth.content, "utf-8")).toBeLessThan(Buffer.byteLength(third.content, "utf-8"))
+      }),
+    ),
+  )
+
+  it.live("reset clears the accounting so a rebuilt session starts over", () =>
+    withBudget(
+      100 * 1024,
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const sessionID = "ses_working_set_reset_test"
+        const chunk = "y".repeat(40 * 1024)
+
+        yield* svc.output(chunk, {}, undefined, sessionID)
+        yield* svc.output(chunk, {}, undefined, sessionID)
+        const spent = yield* svc.output(chunk, {}, undefined, sessionID)
+        expect(spent.truncated).toBe(true)
+
+        yield* svc.reset(sessionID)
+        const afterReset = yield* svc.output(chunk, {}, undefined, sessionID)
+        expect(afterReset.truncated).toBe(false)
+      }),
+    ),
+  )
+
+  it.live("without a sessionID the legacy per-result cap applies (no aggregate bound)", () =>
+    Effect.gen(function* () {
+      const svc = yield* Truncate.Service
+      const chunk = "z".repeat(40 * 1024)
+      const a = yield* svc.output(chunk)
+      const b = yield* svc.output(chunk)
+      expect(a.truncated).toBe(false)
+      expect(b.truncated).toBe(false)
+    }),
+  )
+
+  it.live("accounts the budget per ACTOR SLICE, not per session", () =>
+    withBudget(
+      100 * 1024,
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const sessionID = "ses_slice_test"
+        const chunk = "s".repeat(40 * 1024)
+
+        // Spend 80 KiB of the main slice's 100 KiB budget.
+        yield* svc.output(chunk, {}, undefined, sessionID, "main")
+        yield* svc.output(chunk, {}, undefined, sessionID, "main")
+        const mainThird = yield* svc.output(chunk, {}, undefined, sessionID, "main")
+        expect(mainThird.truncated).toBe(true)
+
+        // A subagent slice on the SAME session keeps its own full budget: its
+        // tool output never enters the parent's context, so it must not consume
+        // the parent's budget.
+        const subFirst = yield* svc.output(chunk, {}, undefined, sessionID, "explore-1")
+        expect(subFirst.truncated).toBe(false)
+      }),
+    ),
+  )
+
+  it.live("reset clears every actor slice for the session", () =>
+    withBudget(
+      100 * 1024,
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const sessionID = "ses_slice_reset_test"
+        const chunk = "r".repeat(40 * 1024)
+
+        yield* svc.output(chunk, {}, undefined, sessionID, "main")
+        yield* svc.output(chunk, {}, undefined, sessionID, "main")
+        yield* svc.output(chunk, {}, undefined, sessionID, "explore-1")
+        yield* svc.output(chunk, {}, undefined, sessionID, "explore-1")
+
+        yield* svc.reset(sessionID)
+
+        expect((yield* svc.output(chunk, {}, undefined, sessionID, "main")).truncated).toBe(false)
+        expect((yield* svc.output(chunk, {}, undefined, sessionID, "explore-1")).truncated).toBe(false)
+      }),
+    ),
+  )
+
+  // `read` / `bash` / `grep` set metadata.truncated on EVERY result, so the tool
+  // wrapper used to return early and the governor never saw them — i.e. it was
+  // inert for exactly the tools whose output accumulates. A self-truncated
+  // result must still be ACCOUNTED, and still be shrunk once the budget is spent.
+  it.live("accounts a self-truncated result, then shrinks it once the budget is spent", () =>
+    withBudget(
+      100 * 1024,
+      Effect.gen(function* () {
+        const svc = yield* Truncate.Service
+        const sessionID = "ses_self_trunc_test"
+        const big = "x".repeat(60 * 1024)
+
+        // Room left → a self-truncated result is passed through untouched.
+        const first = yield* svc.output(big, { selfTruncated: true }, undefined, sessionID)
+        expect(first.truncated).toBe(false)
+        expect(first.content).toBe(big)
+
+        // ...but it was ACCOUNTED (60 KiB of the 100 KiB budget), so the next
+        // self-truncated result is shrunk by the governor.
+        const second = yield* svc.output(big, { selfTruncated: true }, undefined, sessionID)
+        expect(second.truncated).toBe(true)
+        if (second.truncated) expect(second.outputPath).toBeDefined()
+        expect(Buffer.byteLength(second.content, "utf-8")).toBeLessThan(Buffer.byteLength(big, "utf-8"))
+      }),
+    ),
+  )
+})

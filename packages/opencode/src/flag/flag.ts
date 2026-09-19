@@ -312,6 +312,25 @@ export const Flag = {
     return truthy("MIMOCODE_ENABLE_DYNAMIC_SYSTEM_PROMPT")
   },
 
+  // Aggregate budget, in bytes, for inline tool output per cache epoch. Enforced
+  // at INSERTION in the tool choke point (see tool/working-set.ts): each NEW
+  // result is capped so the working set cannot accumulate past the budget, while
+  // already-sent results are never mutated (keeps the prompt-cache prefix
+  // stable). Results that no longer fit are still spilled to disk and reachable
+  // via Read, so no information is lost. Default 512 KiB (~128k tokens); set to
+  // 0 to disable the governor and restore the legacy per-result-only cap.
+  get MIMOCODE_WORKING_SET_BUDGET_BYTES() {
+    return nonNegativeNumber("MIMOCODE_WORKING_SET_BUDGET_BYTES") ?? 512 * 1024
+  },
+
+  // Emit a full per-tool schema-size audit in the `tools.audit` debug line. The
+  // tool block is the single largest part of the fixed per-call overhead
+  // (measured: 78% of ~41k tokens), so trimming it needs the per-tool breakdown
+  // rather than the top-5 the always-on `request.size` line carries.
+  get MIMOCODE_TOOL_AUDIT() {
+    return truthy("MIMOCODE_TOOL_AUDIT")
+  },
+
   // Defaults to false (enabled): instruction-file content (AGENTS.md / CLAUDE.md)
   // is appended to the model's system prompt. Set MIMOCODE_DISABLE_INSTRUCTIONS=true
   // to drop the whole instruction block regardless of which files resolve.
@@ -368,9 +387,22 @@ export const Flag = {
   // Defaults to OFF: exec (tool_script orchestration) is registered only for
   // GPT-toolset models. Opt in here to expose it to every model.
   MIMOCODE_ENABLE_EXEC_TOOL: truthy("MIMOCODE_ENABLE_EXEC_TOOL"),
-  // Defaults to OFF for non-GPT models. GPT models enable MCP Tool Search in
-  // SessionPrompt regardless of this flag. Opt in here to enable it for every
-  // function-calling model.
+  // Defaults to OFF for non-GPT models; GPT models enable MCP Tool Search in
+  // SessionPrompt regardless of this flag.
+  //
+  // WHY IT STAYS OPT-IN despite the prize. Measured with ~40 MCP tools, enabling
+  // this takes the advertised tool block from 125,115 to 87,553 chars — about
+  // -9.4k tokens PER CALL — because the search tool carries a catalog of names +
+  // descriptions only, while eager loading carries every schema and parameter.
+  // But direct MCP exposure is a DELIBERATE general default: it keeps MCP calls
+  // in the model's native tool surface, and the suite pins that contract
+  // ("exposes MCP tools directly for non-GPT models by default", plus the
+  // direct-call rejection, single-turn and lifecycle tests). Switching the
+  // default is a behaviour MIGRATION for every non-GPT model — the model must
+  // call mcp_tool_search before any MCP tool is reachable — and it needs those
+  // tests re-based on the lazy path, not a one-line flip.
+  //
+  // Opt in per machine with MIMOCODE_EXPERIMENTAL_MCP_TOOL_SEARCH=true.
   MIMOCODE_EXPERIMENTAL_MCP_TOOL_SEARCH:
     MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_MCP_TOOL_SEARCH"),
   // Defaults to OFF (opt-in): the Orchestrator primary mode — a general
@@ -383,10 +415,13 @@ export const Flag = {
   // MIMOCODE_EXPERIMENTAL flag).
   MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL:
     MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL"),
-  // Defaults to true: cron + self-paced loop scheduling are on by default.
-  // Set MIMOCODE_EXPERIMENTAL_CRON=false to opt out. Runtime kill switch is
-  // MIMOCODE_DISABLE_CRON (checked live every tick).
-  MIMOCODE_EXPERIMENTAL_CRON: !falsy("MIMOCODE_EXPERIMENTAL_CRON"),
+  // Defaults to OFF (opt-in). Cron and self-paced loop scheduling are used by
+  // almost no coding session, yet every session PAID for them: the cron tool
+  // alone is 5,781 chars of the advertised tool block, re-sent on every call.
+  // Enable with MIMOCODE_EXPERIMENTAL_CRON=true (or the umbrella
+  // MIMOCODE_EXPERIMENTAL). The runtime kill switch is still MIMOCODE_DISABLE_CRON
+  // (checked live every tick).
+  MIMOCODE_EXPERIMENTAL_CRON: MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_CRON"),
   // Keepalive contract for self-paced loops (spec [S8]). Budget = how many
   // "forget" turns the model gets before the loop is declared model_stopped;
   // delay seconds = the auto-arm horizon used for the keepalive fire. Budget

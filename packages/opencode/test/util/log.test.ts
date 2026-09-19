@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import path from "path"
 import { Global } from "../../src/global"
 import { Log } from "../../src/util"
+import { levelFromArgv } from "../../src/util/log"
 import { MIMOCODE_PROCESS_ROLE } from "../../src/util/mimo-process"
 import { tmpdir } from "../fixture/fixture"
 
@@ -339,4 +340,17 @@ test("print mode is unaffected by an unusable log directory", async () => {
 
   expect(result.stderr).toContain("printed record")
   expect(result.stderr).not.toContain("failed")
+})
+
+test("levelFromArgv reads --log-level in both forms, and ignores junk", () => {
+  // The TUI worker (a Bun Worker thread) re-runs Log.init and shares
+  // process.argv, so it must be able to read the same flag the CLI middleware
+  // does — otherwise --log-level DEBUG had no effect on the process that runs
+  // sessions. See util/log.ts levelFromArgv.
+  expect(levelFromArgv(["--log-level", "DEBUG"])).toBe("DEBUG")
+  expect(levelFromArgv(["--log-level=debug"])).toBe("DEBUG")
+  expect(levelFromArgv(["mimo", "--log-level", "WARN", "run"])).toBe("WARN")
+  expect(levelFromArgv(["--print-logs"])).toBeUndefined()
+  expect(levelFromArgv(["--log-level"])).toBeUndefined()
+  expect(levelFromArgv(["--log-level", "NOPE"])).toBeUndefined()
 })
