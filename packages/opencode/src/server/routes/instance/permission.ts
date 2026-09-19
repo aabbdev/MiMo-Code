@@ -13,11 +13,12 @@ export const PermissionRoutes = lazy(() =>
       "/:requestID/reply",
       describeRoute({
         summary: "Respond to permission request",
-        description: "Approve or deny a permission request from the AI assistant.",
+        description:
+          "Approve or deny a permission request from the AI assistant. Returns false when no such request is pending — e.g. the instance holding it was disposed and rebuilt — so a client can drop a stale prompt instead of waiting on a reply that can never land.",
         operationId: "permission.reply",
         responses: {
           200: {
-            description: "Permission processed successfully",
+            description: "Permission processed (false when the request was no longer pending)",
             content: {
               "application/json": {
                 schema: resolver(z.boolean()),
@@ -39,12 +40,11 @@ export const PermissionRoutes = lazy(() =>
           const params = c.req.valid("param")
           const json = c.req.valid("json")
           const svc = yield* Permission.Service
-          yield* svc.reply({
+          return yield* svc.reply({
             requestID: params.requestID,
             reply: json.reply,
             message: json.message,
           })
-          return true
         }),
     )
     .get(

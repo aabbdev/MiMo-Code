@@ -218,6 +218,25 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
 
   const session = createMemo(() => sync.data.session.find((s) => s.id === props.request.sessionID))
 
+  // A reply that comes back `false` means the server has no such request pending
+  // — the instance holding it was disposed and rebuilt, so the answer landed on
+  // nothing. Drop the stale prompt rather than leaving it on screen waiting for
+  // a reply that can never be delivered.
+  const reply = async (input: Omit<Parameters<typeof sdk.client.permission.reply>[0], "requestID">) => {
+    const handled = await sdk.client.permission
+      .reply({ ...input, requestID: props.request.id })
+      .then((result) => result.data)
+      .catch(() => undefined)
+    if (handled !== false) return
+    const requests = sync.data.permission[props.request.sessionID]
+    if (!requests) return
+    sync.set(
+      "permission",
+      props.request.sessionID,
+      requests.filter((request) => request.id !== props.request.id),
+    )
+  }
+
   const input = createMemo(() => {
     const tool = props.request.tool
     if (!tool) return {}
@@ -265,9 +284,8 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
           onSelect={(option) => {
             setStore("stage", "permission")
             if (option === "cancel") return
-            void sdk.client.permission.reply({
+            void reply({
               reply: "always",
-              requestID: props.request.id,
             })
           }}
         />
@@ -275,9 +293,8 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
       <Match when={store.stage === "reject"}>
         <RejectPrompt
           onConfirm={(message) => {
-            void sdk.client.permission.reply({
+            void reply({
               reply: "reject",
-              requestID: props.request.id,
               message: message || undefined,
             })
           }}
@@ -560,15 +577,13 @@ export function PermissionPrompt(props: { request: PermissionRequest }) {
                     setStore("stage", "reject")
                     return
                   }
-                  void sdk.client.permission.reply({
+                  void reply({
                     reply: "reject",
-                    requestID: props.request.id,
                   })
                   return
                 }
-                void sdk.client.permission.reply({
+                void reply({
                   reply: "once",
-                  requestID: props.request.id,
                 })
               }}
             />

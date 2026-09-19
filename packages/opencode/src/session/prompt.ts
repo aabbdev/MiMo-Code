@@ -5679,16 +5679,30 @@ NOTE: At any point in time through this workflow you should feel free to ask the
       "SessionPrompt.loop",
     )(function* (input: z.infer<typeof LoopInput>) {
       const agentID = input.agentID ?? "main"
-      const work = runLoop(
-        input.sessionID,
-        agentID,
-        input.task_id,
-        input.titleLocale,
-        input.deferInbox,
-        undefined,
-        undefined,
-        undefined,
-        input.source,
+      // A turn runs detached from its HTTP request (`prompt_async` answers 204
+      // immediately) and a turn parked on a permission ask has already left
+      // `Instance.provide`'s scope, so the directory looks idle to `disposeAll`.
+      // Hold the instance for as long as the turn runs — otherwise a background
+      // instance reload aborts it mid-flight or orphans the pending ask.
+      const work = Effect.acquireUseRelease(
+        Effect.gen(function* () {
+          const directory = Instance.directory
+          Instance.retain(directory)
+          return directory
+        }),
+        () =>
+          runLoop(
+            input.sessionID,
+            agentID,
+            input.task_id,
+            input.titleLocale,
+            input.deferInbox,
+            undefined,
+            undefined,
+            undefined,
+            input.source,
+          ),
+        (directory) => Effect.sync(() => Instance.release(directory)),
       )
       if (!input.notifyParentOnComplete || agentID === "main") {
         return yield* state.ensureRunning(input.sessionID, agentID, lastAssistant(input.sessionID, agentID), work)

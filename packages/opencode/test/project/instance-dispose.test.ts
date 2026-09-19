@@ -39,6 +39,32 @@ test("global disposal skips instances that are still in use", async () => {
   }
 })
 
+test("global disposal skips an instance held by an out-of-band retain", async () => {
+  await using tmp = await tmpdir()
+  let disposals = 0
+  const unregister = registerDisposer(async (directory) => {
+    if (directory === tmp.path) disposals++
+  })
+
+  try {
+    // A session turn runs detached from its HTTP request (`prompt_async` answers
+    // 204 immediately) and a turn parked on a permission ask has already left
+    // `provide`, so the retain is the only thing keeping the directory active.
+    await Instance.provide({ directory: tmp.path, fn: () => undefined })
+    Instance.retain(tmp.path)
+
+    await Instance.disposeAll()
+    expect(disposals).toBe(0)
+
+    Instance.release(tmp.path)
+    await Instance.disposeAll()
+    expect(disposals).toBe(1)
+  } finally {
+    unregister()
+    await Instance.disposeDirectory(tmp.path)
+  }
+})
+
 test("targeted disposal is bounded and cannot evict a replacement", async () => {
   await using tmp = await tmpdir()
   let started!: () => void

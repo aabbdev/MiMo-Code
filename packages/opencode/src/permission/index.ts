@@ -165,7 +165,13 @@ export type ReplyInput = Schema.Schema.Type<typeof ReplyInput>
 
 export interface Interface {
   readonly ask: (input: AskInput, abortSignal?: AbortSignal) => Effect.Effect<void, Error>
-  readonly reply: (input: ReplyInput) => Effect.Effect<void>
+  /**
+   * Resolve a pending ask. Returns false when no such request is pending — e.g.
+   * the instance that held it was disposed and rebuilt, so the request is gone
+   * for good. Callers use that to drop a stale prompt instead of hanging on a
+   * reply that can never land.
+   */
+  readonly reply: (input: ReplyInput) => Effect.Effect<boolean>
   readonly list: () => Effect.Effect<ReadonlyArray<Request>>
   readonly skipAll: () => Effect.Effect<boolean>
   readonly setSkipAll: (enabled: boolean) => Effect.Effect<void>
@@ -535,7 +541,7 @@ export const layer = Layer.effect(
     const reply = Effect.fn("Permission.reply")(function* (input: ReplyInput) {
       const { approved, pending } = yield* InstanceState.get(state)
       const existing = pending.get(input.requestID)
-      if (!existing) return
+      if (!existing) return false
 
       pending.delete(input.requestID)
       yield* bus.publish(Event.Replied, {
@@ -560,17 +566,17 @@ export const layer = Layer.effect(
           })
           yield* Deferred.fail(item.deferred, new RejectedError())
         }
-        return
+        return true
       }
 
       yield* Deferred.succeed(existing.deferred, undefined)
-      if (input.reply === "once") return
+      if (input.reply === "once") return true
       // Forced-ask permissions never persist an approval — even if the caller
       // (or a future permission type) accidentally passes a non-empty `always`
       // list, the promise of "human must confirm every time" trumps it.
       // Treating "always" as "once" for these keeps the UI reply path a no-op
       // instead of writing a rule that ask() would just ignore next call.
-      if (FORCED_ASK.has(existing.info.permission)) return
+      if (FORCED_ASK.has(existing.info.permission)) return true
 
       for (const pattern of existing.info.always) {
         approved.push({
@@ -604,6 +610,7 @@ export const layer = Layer.effect(
         })
         yield* Deferred.succeed(item.deferred, undefined)
       }
+      return true
     })
 
     const list = Effect.fn("Permission.list")(function* () {

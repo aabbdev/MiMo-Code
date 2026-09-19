@@ -145,6 +145,26 @@ export const Instance = {
       leave(directory)
     }
   },
+  /**
+   * Hold a directory's instance open across an asynchronous wait that is NOT
+   * itself wrapped in `provide`.
+   *
+   * A session turn runs detached from its HTTP request (`prompt_async` answers
+   * 204 immediately), and a turn parked on a permission ask has already left
+   * `provide`'s scope — so `active` reads empty for a directory that is very
+   * much in use. `disposeAll` (a background instance reload, e.g. the hourly
+   * models-catalog refresh) would then tear the turn down mid-flight and orphan
+   * the pending ask, leaving the TUI with a prompt it can never answer.
+   *
+   * Must be paired with `release`; use `Effect.acquireUseRelease` so an
+   * interrupt still balances it.
+   */
+  retain(directory: string) {
+    enter(AppFileSystem.resolve(directory))
+  },
+  release(directory: string) {
+    leave(AppFileSystem.resolve(directory))
+  },
   get current() {
     return context.use()
   },

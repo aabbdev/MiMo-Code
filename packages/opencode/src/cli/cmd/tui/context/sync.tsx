@@ -380,9 +380,22 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
 
     event.subscribe((event) => {
       switch (event.type) {
-        case "server.instance.disposed":
+        case "server.instance.disposed": {
+          // The disposed instance failed every pending Deferred and cleared its
+          // `pending` map, so a permission or question still on screen for this
+          // directory can never be answered — the prompt would just hang. Drop
+          // them here, since no `permission.replied` event will ever arrive.
+          if (event.properties.directory === sdk.directory) {
+            setStore(
+              produce((s) => {
+                for (const sid of Object.keys(s.permission)) delete s.permission[sid]
+                for (const sid of Object.keys(s.question)) delete s.question[sid]
+              }),
+            )
+          }
           void bootstrap().catch(reportDenied)
           break
+        }
         case "permission.replied": {
           const requests = store.permission[event.properties.sessionID]
           if (!requests) break
