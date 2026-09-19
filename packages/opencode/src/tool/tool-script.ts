@@ -33,8 +33,23 @@ const MAX_CODE_BYTES = 128 * 1024
 const MAX_FILE_BYTES = 10 * 1024 * 1024
 const EXEC_PROGRESS_DEBOUNCE_MS = 150
 const TRACE_TAIL_ENTRIES = 20
+const DIAGNOSTIC_ECHO_CHARS = 200
+const DIAGNOSTIC_ECHO_BEFORE = 80
 const EXEC_COMMAND_DEFAULT_YIELD_TIME_MS = 10_000
 const EXEC_COMMAND_DEFAULT_MAX_OUTPUT_TOKENS = 10_000
+
+// The transpile diagnostic echoes the offending source line so the model can see
+// its own syntax error. Echoing it unbounded is catastrophic for a line that is a
+// multi-KB template literal — a 40 KB checkpoint document came back as a
+// "line 1, column 642" error. Show a window anchored on the error column instead.
+function echoDiagnosticLine(line: string, column: number): string {
+  if (line.length <= DIAGNOSTIC_ECHO_CHARS) return line
+  const start = Math.max(0, Math.min(column - DIAGNOSTIC_ECHO_BEFORE, line.length - DIAGNOSTIC_ECHO_CHARS))
+  const end = start + DIAGNOSTIC_ECHO_CHARS
+  const head = start > 0 ? `…<elided ${start} chars>` : ""
+  const tail = end < line.length ? `…<elided ${line.length - end} chars>` : ""
+  return `${head}${line.slice(start, end)}${tail}`
+}
 
 const ExecCommandParameters = z.object({
   cmd: z.string().describe("Shell command to execute."),
@@ -556,13 +571,19 @@ export const ToolScriptTool = Tool.define(
                 ...(part.state.attachments ? { attachments: [...part.state.attachments] } : {}),
               },
             }))
-          const terminalMetadata = (status: string) => ({
+          // The truncator cuts a head-only slice from a large result, which drops
+          // the closing tags and leaves the model an unbalanced `<exec>` envelope.
+          // Declaring the close lets Truncate restore it (see Truncate.Options.closing).
+          const envelopeClosing = (envelope: "return" | "error") =>
+            envelope === "return" ? "</return_value>\n</exec>" : "</error_message>\n</exec>"
+          const terminalMetadata = (status: string, closing?: string) => ({
             status,
             toolCalls: subParts.length,
             counts: tally(),
             recent: recentTail(),
             exec_schema: EXEC_METADATA_SCHEMA,
             sub_parts: snapshotSubParts(),
+            ...(closing ? { closing } : {}),
           })
           // completeToolCall REPLACES part metadata with execute()'s return value,
           // so every terminal return re-publishes the complete nested metadata —
@@ -590,7 +611,7 @@ export const ToolScriptTool = Tool.define(
           if (Buffer.byteLength(code, "utf8") > MAX_CODE_BYTES) {
             return {
               title: "code too large",
-              metadata: terminalMetadata("code_error"),
+              metadata: terminalMetadata("code_error", envelopeClosing("error")),
               output: `<exec status="code_error">\n<error_message>\ncode exceeds ${MAX_CODE_BYTES} bytes\n</error_message>\n</exec>`,
             }
           }
@@ -681,7 +702,8 @@ export const ToolScriptTool = Tool.define(
                 if (!diagnostic.file || diagnostic.start === undefined)
                   return ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")
                 const pos = diagnostic.file.getLineAndCharacterOfPosition(diagnostic.start)
-                return `line ${pos.line}, column ${pos.character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")}\n  ${diagnostic.file.text.split("\n")[pos.line] ?? ""}`
+                const line = diagnostic.file.text.split("\n")[pos.line] ?? ""
+                return `line ${pos.line}, column ${pos.character + 1}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n")}\n  ${echoDiagnosticLine(line, pos.character)}`
               })
               .join("\n")
             const importHint = hasImport
@@ -692,7 +714,7 @@ export const ToolScriptTool = Tool.define(
           if (result.diagnostics?.length || hasImport) {
             return {
               title: "transpile error",
-              metadata: terminalMetadata("code_error"),
+              metadata: terminalMetadata("code_error", envelopeClosing("error")),
               output: `<exec status="code_error">\n<error_message>\n${formatDiagnostics(result.diagnostics ?? [])}\n</error_message>\n</exec>`,
             }
           }
@@ -1032,7 +1054,7 @@ return { __undef: __out.value === undefined, json: __out.value === undefined ? "
             yield* flushProgress()
             return {
               title: status,
-              metadata: terminalMetadata(status),
+              metadata: terminalMetadata(status, envelopeClosing("error")),
               output: `<exec status="${status}">\n<error_message>\n${explained}\n</error_message>\n${logBlock}${traceBlock}</exec>`,
             }
           }
@@ -1052,7 +1074,7 @@ return { __undef: __out.value === undefined, json: __out.value === undefined ? "
             yield* flushProgress()
             return {
               title: "result too large",
-              metadata: terminalMetadata("budget_exceeded"),
+              metadata: terminalMetadata("budget_exceeded", envelopeClosing("error")),
               output: `<exec status="budget_exceeded">\n<error_message>\nreturned value is ${returnedBytes} bytes (max ${MAX_RESULT_BYTES}). Aggregate or slice the data before returning.\n</error_message>\n${warningsBlock}${logBlock}${traceBlock}</exec>`,
             }
           }
@@ -1060,7 +1082,7 @@ return { __undef: __out.value === undefined, json: __out.value === undefined ? "
           yield* flushProgress()
           return {
             title: `${subParts.length} tool calls`,
-            metadata: terminalMetadata("completed"),
+            metadata: terminalMetadata("completed", envelopeClosing("return")),
             output: `<exec status="completed">\n<return_value>\n${returnedText}\n</return_value>\n${warningsBlock}${logBlock}${traceBlock}</exec>`,
           }
         }).pipe(Effect.orDie),

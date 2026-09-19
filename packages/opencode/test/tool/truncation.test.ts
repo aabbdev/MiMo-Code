@@ -424,3 +424,36 @@ describe("Truncate working-set governor", () => {
     ),
   )
 })
+
+// A head-only cut drops the tail of a delimited document, so an `exec` envelope
+// reached the model with `<exec>`/`<return_value>` still open. The producer
+// declares how its document closes and the truncator restores it.
+describe("Truncate closing", () => {
+  const CLOSING = "</return_value>\n</exec>"
+  const envelope = (body: string) => `<exec status="completed">\n<return_value>\n${body}\n</return_value>\n</exec>`
+
+  it.live("restores a declared closing dropped by a head-only cut", () =>
+    Effect.gen(function* () {
+      const svc = yield* Truncate.Service
+      const out = yield* svc.output(envelope("x".repeat(80 * 1024)), { closing: CLOSING }, undefined, "ses_closing_head")
+      expect(out.truncated).toBe(true)
+      expect(out.content).toContain(CLOSING)
+    }),
+  )
+
+  it.live("does not duplicate a closing the kept tail already carries", () =>
+    Effect.gen(function* () {
+      const svc = yield* Truncate.Service
+      // The trailing "Error" makes the preview keep the tail, so the original
+      // close survives the cut and must not be appended a second time.
+      const out = yield* svc.output(
+        envelope(`${"x".repeat(80 * 1024)}\nError: boom`),
+        { closing: CLOSING },
+        undefined,
+        "ses_closing_tail",
+      )
+      expect(out.truncated).toBe(true)
+      expect(out.content.match(/<\/exec>/g)?.length).toBe(1)
+    }),
+  )
+})

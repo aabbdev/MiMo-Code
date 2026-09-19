@@ -33,6 +33,17 @@ export type Options = PreviewOptions & {
    * for exactly the tools whose output accumulates into the working set.
    */
   selfTruncated?: boolean
+  /**
+   * Text that must close the output, appended when truncation would otherwise
+   * drop it. A tool that renders a delimited document (`exec` wraps its result
+   * in `<exec>…</exec>`) loses the closing tag to a head-only cut, handing the
+   * model an unbalanced envelope. Declaring the closing text lets the producer
+   * keep ownership of its own shape while the truncator stays generic.
+   *
+   * Skipped when the kept text already contains its final line — a head+tail cut
+   * can preserve the original close, and appending it twice would be worse.
+   */
+  closing?: string
 }
 
 const log = Log.create({ service: "truncation" })
@@ -162,8 +173,16 @@ export const layer = Layer.effect(
       }
       const file = yield* write(text)
       const hint = formatToolTruncationHint(file, options.outcome ?? "success", agent)
+      // Skip when the kept text already carries the closing's final line: a
+      // head+tail cut preserves the original close, and doubling it would be
+      // worse than the unbalance this option exists to prevent.
+      const finalLine = options.closing?.split("\n").at(-1)
+      const body =
+        finalLine !== undefined && finalLine !== "" && !preview.content.includes(finalLine)
+          ? `${preview.content}\n${options.closing}`
+          : preview.content
       return {
-        content: `${preview.content}\n\n${hint}`,
+        content: `${body}\n\n${hint}`,
         truncated: true,
         outputPath: file,
       } as const

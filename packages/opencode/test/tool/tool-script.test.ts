@@ -866,6 +866,15 @@ return r.output;`,
     expect(result.output).toContain("const = broken (")
   })
 
+  test("syntax error echo stays bounded when the offending line is huge", async () => {
+    // Mirrors the real failure: a multi-KB template literal whose embedded backtick
+    // closes it early, so the diagnostic would otherwise reprint the whole line.
+    const result = await runToolScript("const s = `" + "x".repeat(3000) + "`inner`" + "`", [])
+    expect(result.metadata.status).toBe("code_error")
+    expect(result.output).toContain("<elided")
+    expect(result.output.length).toBeLessThan(1000)
+  })
+
   test("top-level import gets an explicit not-supported note", async () => {
     const result = await runToolScript(`import * as x from "node:fs"\nreturn 1`, [])
     expect(result.metadata.status).toBe("code_error")

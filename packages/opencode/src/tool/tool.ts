@@ -140,7 +140,12 @@ function wrap<Parameters extends z.ZodType, Result extends Metadata>(
           // budget is spent.
           const truncated = yield* truncate.output(
             result.output,
-            result.metadata.truncated !== undefined ? { selfTruncated: true } : {},
+            {
+              ...(result.metadata.truncated !== undefined ? { selfTruncated: true } : {}),
+              // The tool declares how its own document closes, if it has one, so a
+              // head-only cut cannot leave the model with an unbalanced envelope.
+              ...(typeof result.metadata.closing === "string" ? { closing: result.metadata.closing } : {}),
+            },
             agent,
             ctx.sessionID,
             ctx.actorID,
