@@ -284,6 +284,12 @@ test("cron-bridge resets sentinel cache on main-agent Compacted, ignores subagen
   const captured: { value: CapturedPrompt[] } = { value: [] }
   const wsDir = freshDir()
   const instanceDir = mkdtempSync(join(tmpdir(), "cron-bridge-instance-"))
+  // The bridge is a no-op unless the flag is on, and cron is opt-in now. The
+  // module-level Flag value is computed at IMPORT time, so setting the env var
+  // here would not be seen — set the property directly, as the sibling cron
+  // tests do.
+  const originalCronFlag = Flag.MIMOCODE_EXPERIMENTAL_CRON
+  ;(Flag as { MIMOCODE_EXPERIMENTAL_CRON: boolean }).MIMOCODE_EXPERIMENTAL_CRON = true
   try {
     // Set up loop.md so the sentinel expansion is exercisable.
     const mkdirSync2 = (await import("fs")).mkdirSync
@@ -341,6 +347,7 @@ test("cron-bridge resets sentinel cache on main-agent Compacted, ignores subagen
       ),
     )
   } finally {
+    ;(Flag as { MIMOCODE_EXPERIMENTAL_CRON: boolean }).MIMOCODE_EXPERIMENTAL_CRON = originalCronFlag
     rmSync(wsDir, { recursive: true, force: true })
     rmSync(instanceDir, { recursive: true, force: true })
   }
