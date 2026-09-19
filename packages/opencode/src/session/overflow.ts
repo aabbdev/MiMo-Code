@@ -66,9 +66,23 @@ function budget(input: { cfg: Config.Info; model: Provider.Model }, hard: number
     }
     return undefined
   }
-  // A budget at or above the provider cap is a no-op — report it as such so the
-  // UI keeps attributing the window to the model.
-  if (parsed >= hard) return undefined
+  // A budget at or above the provider cap is a no-op — the model's own window
+  // stands, and the UI keeps attributing the window to the model. It must NOT be
+  // silent: a dropped value looks exactly like an applied one, so someone who
+  // writes "800K" against a 200K model believes they are capped when nothing
+  // changed. The too-small case above already warns; this is the same failure
+  // with the opposite sign, and it was the only silent branch.
+  if (parsed >= hard) {
+    if (!warned.has(`${key}:${raw}`)) {
+      warned.add(`${key}:${raw}`)
+      log.warn("ignoring compaction.max_context — at or above the model window", {
+        model: key,
+        value: raw,
+        window: hard,
+      })
+    }
+    return undefined
+  }
   return parsed
 }
 

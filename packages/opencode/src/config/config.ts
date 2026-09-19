@@ -272,9 +272,11 @@ const InfoSchema = Schema.Struct({
       max_context: Schema.optional(Schema.Union([TokenQuantity, Schema.Record(Schema.String, TokenQuantity)])).annotate(
         {
           description:
-            'Compact earlier than the model window. A token count (300000), a shorthand string ("300K", "1M", "50%"), ' +
-            'or a map keyed by "<providerID>/<modelID>" with wildcards ("openai/gpt-5*"). Always clamped to the ' +
-            "model's real window — it can only lower the compaction trigger, never raise it. 0 means no budget.",
+            'Compact earlier than the model window. A token count (300000), a shorthand string ("300K", "1M", "50%") ' +
+            '— a percentage is OF THE MODEL WINDOW — or a map keyed by "<providerID>/<modelID>" with wildcards ' +
+            '("openai/gpt-5*"). This sets the WORKING window; compaction then fires at 90% of it ' +
+            '(MIMOCODE_COMPACTION_TRIGGER_RATIO), so "80%" compacts at 72% of the model window. It can only lower ' +
+            "the trigger, never raise it: a value at or above the window is ignored (and logged). 0 means no budget.",
         },
       ),
     }),
