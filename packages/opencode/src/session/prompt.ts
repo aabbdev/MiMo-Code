@@ -1332,6 +1332,14 @@ export const layer = Layer.effect(
       }),
     )
 
+    // A `catchCause` around title work also sees plain interruptions — the
+    // surrounding turn was cancelled. Those are not failures, but
+    // `Cause.squash` renders them as an "All fibers interrupted without error"
+    // Error, and logging that at WARN reads like a real title-generation fault.
+    // Log only causes that actually carry something other than interruption.
+    const warnUnlessInterrupted = (message: string) => (cause: Cause.Cause<unknown>) =>
+      Cause.hasInterruptsOnly(cause) ? Effect.void : elog.warn(message, { error: Cause.squash(cause) })
+
     const title = Effect.fn("SessionPrompt.ensureTitle")(function* (input: {
       session: Session.Info
       agent: string | undefined
@@ -1358,7 +1366,7 @@ export const layer = Layer.effect(
         const result = yield* genTitle({ text: normalized.text, locale: input.titleLocale, sessionID: current.id, model: firstUser?.info.role === "user" ? firstUser.info.model : input.model })
         if (result.status !== "generated") return
         yield* sessions.setTitleIfDefault({ sessionID: current.id, title: result.title, expectedRevision: current.titleRevision })
-      }).pipe(Effect.catchCause((cause) => elog.warn("auto title generation failed", { error: Cause.squash(cause) })), Effect.forkDetach({ startImmediately: true }))
+      }).pipe(Effect.catchCause(warnUnlessInterrupted("auto title generation failed")), Effect.forkDetach({ startImmediately: true }))
     })
 
     const predict = Effect.fn("SessionPrompt.predict")(function* (input: { sessionID: SessionID }) {
@@ -2381,6 +2389,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         })
         .pipe(
           Effect.catchCause((cause) => {
+            // An internally-raised interrupt is a cancelled turn, not a subtask
+            // failure: re-raise it so the onInterrupt path below still marks the
+            // part "Cancelled", instead of logging a bogus execution error.
+            if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
             const defect = Cause.squash(cause)
             error = defect instanceof Error ? defect : new Error(String(defect))
             log.error("subtask execution failed", { error, agent: task.agent, description: task.description })
@@ -2682,6 +2694,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     ) {
       const exit = yield* provider.getModel(providerID, modelID).pipe(Effect.exit)
       if (Exit.isSuccess(exit)) return exit.value
+      // `Effect.exit` captures an interruption as a value, so a cancelled turn
+      // lands here. Re-raise it rather than reporting a model-lookup failure.
+      if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
       const err = Cause.squash(exit.cause)
       if (Provider.ModelNotFoundError.isInstance(err)) {
         const hint = err.data.suggestions?.length ? ` Did you mean: ${err.data.suggestions.join(", ")}?` : ""
@@ -2827,6 +2842,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }
               pieces.push({ ...part, messageID: info.id, sessionID: input.sessionID })
             } else {
+              // A cancelled turn surfaces here as a failure (`Effect.exit`
+              // captures interrupts as values). Propagate it instead of
+              // publishing a session error and feeding the model a synthetic
+              // "failed to read" message for a read that was simply abandoned.
+              if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
               const error = Cause.squash(exit.cause)
               log.error("failed to read MCP resource", { error, clientName, uri })
               const message = error instanceof Error ? error.message : String(error)
@@ -3000,6 +3020,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                     pieces.push({ ...part, messageID: info.id, sessionID: input.sessionID })
                   }
                 } else {
+                  // Cancelled turn, not a read failure — see the MCP branch above.
+                  if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
                   const error = Cause.squash(exit.cause)
                   log.error("failed to read file", { error })
                   const message = error instanceof Error ? error.message : String(error)
@@ -3022,6 +3044,8 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 const args = { file_path: filepath }
                 const exit = yield* execRead(args).pipe(Effect.exit)
                 if (Exit.isFailure(exit)) {
+                  // Cancelled turn, not a read failure — see the MCP branch above.
+                  if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
                   const error = Cause.squash(exit.cause)
                   log.error("failed to read directory", { error })
                   const message = error instanceof Error ? error.message : String(error)
@@ -3422,7 +3446,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
 
         const titleMessage = eligibleTitle ? [...previous, message].find(hasTitleInput) : undefined
         if (titleMessage?.info.role === "user") {
-          yield* title({ session, agent: titleMessage.info.agent, model: titleMessage.info.model, titleLocale: input.titleLocale, history: [titleMessage] }).pipe(Effect.catchCause(cause => elog.warn("title initialization failed", { error: Cause.squash(cause) })))
+          yield* title({ session, agent: titleMessage.info.agent, model: titleMessage.info.model, titleLocale: input.titleLocale, history: [titleMessage] }).pipe(Effect.catchCause(warnUnlessInterrupted("title initialization failed")))
         }
         if (input.noReply === true) return message
         // Short-circuit: when the message was dropped for being empty-content

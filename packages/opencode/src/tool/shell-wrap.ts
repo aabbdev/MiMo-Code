@@ -46,6 +46,10 @@ export function shellWrap<P extends z.ZodType, M extends Tool.Metadata>(
             const op = operationLabel(recovered)
             const exit = yield* Effect.exit(def.execute(recovered, ctx as Tool.Context))
             if (exit._tag === "Failure") {
+              // A cancelled turn reaches here as a failure (`Effect.exit` captures
+              // interrupts as values). Propagate it — reporting the interrupt text
+              // as "invalid arguments" would tell the model it called the tool wrong.
+              if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
               return {
                 title: `${def.id}: invalid arguments`,
                 output: formatFailedCommandNoVerb(jsonTeachingBody(def.id, describeFailure(exit.cause))),
@@ -120,6 +124,8 @@ export function shellWrap<P extends z.ZodType, M extends Tool.Metadata>(
           const operation = operationLabel(parsed)
           const exit = yield* Effect.exit(def.execute(parsed, ctx as Tool.Context))
           if (exit._tag === "Failure") {
+            // Cancelled turn, not a command failure — see the recovery branch above.
+            if (Cause.hasInterruptsOnly(exit.cause)) return yield* Effect.interrupt
             blocks.push(formatFailedCommand(i + 1, operation, describeFailure(exit.cause)))
             if (i + 1 < parsedList.length) {
               blocks.push(`<not-executed>commands #${i + 2}..#${parsedList.length}</not-executed>`)

@@ -1003,6 +1003,10 @@ const live: Layer.Layer<
           ): Stream.Stream<Event, unknown, never> =>
             source.pipe(
               Stream.catchCause((primaryCause) => {
+                // A cancelled request is not a retryable failure. Normalizing an
+                // interruption would hand it to `SessionRetry.decide`, which can
+                // classify it as retryable and re-issue a request the user stopped.
+                if (Cause.hasInterruptsOnly(primaryCause)) return Stream.failCause(primaryCause)
                 const primaryError = Cause.squash(primaryCause)
                 if (ProviderTransform.isAssistantPrefillRejection(primaryError)) {
                   if (prefillRepaired) return Stream.failCause(primaryCause)
