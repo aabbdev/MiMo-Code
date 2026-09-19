@@ -197,14 +197,14 @@ describe("tool.registry advertised-budget lock", () => {
   /**
    * Whole-block ceiling for the isolated (no MCP, no plugins) built-in set,
    * measured as `description + JSON schema` per tool. Baseline when locked:
-   * 80,062 chars. The ceiling leaves ~10% headroom so a deliberate small
-   * addition passes while an accidental blow-up (a verbose new description, a
-   * schema that balloons) fails.
+   * 81,843 chars — up 1,781 since the LSP tool became default-on. The ceiling
+   * leaves ~10% headroom so a deliberate small addition passes while an
+   * accidental blow-up (a verbose new description, a schema that balloons) fails.
    *
    * Scope: this measures the DEFAULT flag set. An experimental run
    * (MIMOCODE_EXPERIMENTAL) advertises extra tools and is out of scope.
    */
-  const CEILING = 88_000
+  const CEILING = 90_000
 
   it.live("keeps the flag defaults that bound the tool block", () =>
     Effect.gen(function* () {
@@ -216,6 +216,10 @@ describe("tool.registry advertised-budget lock", () => {
       // default pinned by its own tests. Flipping it is a migration, not a
       // tweak — see flag.ts.
       expect(Flag.MIMOCODE_EXPERIMENTAL_MCP_TOOL_SEARCH).toBe(false)
+      // The LSP tool is default-on: it is navigation, and on a codebase whose
+      // files are too large to read (10k lines ≈ 100k tokens against a 50 KiB
+      // per-result cap) references and definitions are the only cheap way in.
+      expect(Flag.MIMOCODE_EXPERIMENTAL_LSP_TOOL).toBe(true)
     }),
   )
 

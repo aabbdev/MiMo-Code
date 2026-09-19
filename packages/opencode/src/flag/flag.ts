@@ -383,7 +383,16 @@ export const Flag = {
   MIMOCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX: number("MIMOCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX"),
   MIMOCODE_EXPERIMENTAL_OXFMT: MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_OXFMT"),
   MIMOCODE_EXPERIMENTAL_LSP_TY: truthy("MIMOCODE_EXPERIMENTAL_LSP_TY"),
-  MIMOCODE_EXPERIMENTAL_LSP_TOOL: MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_LSP_TOOL"),
+  // Defaults to ON (opt-OUT). The LSP tool is navigation — go-to-definition,
+  // find-references, diagnostics, hover — which is exactly what a coding agent
+  // needs on a large codebase, and it is the only way to work a file too big to
+  // read: a 10k-line C++/MLIR source is ~100k tokens, so a read shows a
+  // fragment (the 50 KiB per-result cap stops at roughly 1,300 lines) while
+  // references and definitions stay cheap and precise. Servers are resolved per
+  // language and skip silently when absent (clangd auto-downloads; MLIR probes
+  // the LLVM layouts), so an unconfigured language costs nothing but the tool
+  // listing. Set MIMOCODE_EXPERIMENTAL_LSP_TOOL=false to hide it again.
+  MIMOCODE_EXPERIMENTAL_LSP_TOOL: !falsy("MIMOCODE_EXPERIMENTAL_LSP_TOOL"),
   // Defaults to OFF: exec (tool_script orchestration) is registered only for
   // GPT-toolset models. Opt in here to expose it to every model.
   MIMOCODE_ENABLE_EXEC_TOOL: truthy("MIMOCODE_ENABLE_EXEC_TOOL"),

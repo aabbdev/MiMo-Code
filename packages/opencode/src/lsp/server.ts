@@ -984,6 +984,50 @@ export const Clangd: Info = {
   },
 }
 
+/**
+ * MLIR — the LSP for `.mlir` (dialect definitions, pass pipelines, operation
+ * lookups). Ships with LLVM as `mlir-lsp-server`, but distro packages install it
+ * under `/usr/lib/llvm-<ver>/bin/` rather than on PATH, so we probe the LLVM
+ * layouts as well as `which`.
+ *
+ * There is deliberately NO entry for `.td`: TableGen has no language server, and
+ * pointing one at it would spawn a process that cannot parse the file — an LSP
+ * client that silently answers nothing is worse than no client at all.
+ */
+export const Mlir: Info = {
+  id: "mlir",
+  // A CMake or compile_commands root is where MLIR dialects/passes are declared;
+  // `lit.cfg.py` covers the test trees that drive them.
+  root: NearestRoot(["CMakeLists.txt", "compile_commands.json", "lit.cfg.py"]),
+  extensions: [".mlir"],
+  async spawn(root) {
+    const ext = process.platform === "win32" ? ".exe" : ""
+    // Newest LLVM first: several versions can coexist and the newest is the one
+    // a project's `mlir-opt` most likely matches.
+    const llvm = (await fs.readdir("/usr/lib", { withFileTypes: true }).catch(() => []))
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith("llvm-"))
+      .sort((a, b) => b.name.localeCompare(a.name, undefined, { numeric: true }))
+      .map((entry) => path.join("/usr/lib", entry.name, "bin", "mlir-lsp-server" + ext))
+    const candidates = [
+      which("mlir-lsp-server") ?? undefined,
+      path.join(Global.Path.bin, "mlir-lsp-server" + ext),
+      ...llvm,
+      "/usr/local/opt/llvm/bin/mlir-lsp-server",
+      "/opt/homebrew/opt/llvm/bin/mlir-lsp-server",
+    ]
+    for (const candidate of candidates) {
+      if (!candidate || !(await pathExists(candidate))) continue
+      return {
+        process: spawn(candidate, [], {
+          cwd: root,
+        }),
+      }
+    }
+    log.info("mlir-lsp-server not found — skipping LSP for .mlir", { root })
+    return undefined
+  },
+}
+
 export const Svelte: Info = {
   id: "svelte",
   extensions: [".svelte"],
