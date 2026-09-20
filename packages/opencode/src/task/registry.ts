@@ -1,5 +1,5 @@
-import { Context, Effect, Layer } from "effect"
-import { Database, and, eq, isNull, or, gt, type SQL } from "@/storage"
+import { Context, Duration, Effect, Layer, Schedule, Cause } from "effect"
+import { Database, and, eq, inArray, isNotNull, isNull, lt, or, gt, type SQL } from "@/storage"
 import { Bus } from "../bus"
 import { Config } from "../config"
 import type { SessionID } from "../session/schema"
@@ -7,6 +7,9 @@ import { TaskTable, TaskEventTable } from "./task.sql"
 import type { Task, TaskEvent } from "./schema"
 import { Created as TaskCreated, Updated as TaskUpdated, type UpdatedKind } from "./events"
 import { RecoverableError } from "@/tool/recoverable"
+import { Log } from "../util"
+
+const log = Log.create({ service: "task" })
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -83,6 +86,12 @@ export interface Interface {
   readonly start: (input: { session_id: SessionID; id: string; owner?: string; event_summary?: string }) => Effect.Effect<Task>
 
   readonly events: (input: { session_id: SessionID; task_id: string }) => Effect.Effect<TaskEvent[]>
+
+  /**
+   * Delete terminal tasks whose archive window (`cleanup_after`) has elapsed,
+   * with their events. Returns how many rows were removed.
+   */
+  readonly cleanup: () => Effect.Effect<number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/TaskRegistry") {}
@@ -380,6 +389,48 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Config.Service> = 
       return updated
     })
 
+    /**
+     * Remove terminal tasks whose archive window has elapsed, with their events
+     * (`task_event` cascades off the composite FK to `task`).
+     *
+     * `cleanup_after` used to be display-only: nothing ever removed a row, so a
+     * long-lived project accumulated everything it had ever registered — 227
+     * tasks and 734 events on one machine, 107 of them already past their cleanup
+     * date — while the tool description promised "Terminal states clean up
+     * automatically after 7 days". This is that cleanup.
+     */
+    const cleanup = Effect.fn("TaskRegistry.cleanup")(function* () {
+      const now = Date.now()
+      const removed = Database.use((db) =>
+        db
+          .delete(TaskTable)
+          .where(
+            and(
+              inArray(TaskTable.status, ["done", "abandoned"]),
+              isNotNull(TaskTable.cleanup_after),
+              lt(TaskTable.cleanup_after, now),
+            ),
+          )
+          .returning({ id: TaskTable.id })
+          .all(),
+      )
+      if (removed.length > 0) log.info("archived tasks removed", { count: removed.length })
+      return removed.length
+    })
+
+    // Hourly, like the tool-output cleanup: the sweep is cheap (one indexed
+    // delete) and the initial run drains whatever accumulated while the process
+    // was down. Delayed so it never competes with session startup.
+    yield* cleanup().pipe(
+      Effect.catchCause((cause) => {
+        log.error("task cleanup failed", { cause: Cause.pretty(cause) })
+        return Effect.void
+      }),
+      Effect.repeat(Schedule.spaced(Duration.hours(1))),
+      Effect.delay(Duration.minutes(1)),
+      Effect.forkScoped,
+    )
+
     return Service.of({
       create,
       list,
@@ -391,6 +442,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Config.Service> = 
       abandon,
       rename,
       start,
+      cleanup,
     })
   }),
 )

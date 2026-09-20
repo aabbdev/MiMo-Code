@@ -7,6 +7,8 @@ import { Instance } from "../../src/project/instance"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { isRecoverableError } from "../../src/tool/recoverable"
+import { Database, and, eq } from "../../src/storage"
+import { TaskTable } from "../../src/task/task.sql"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
 
 afterEach(async () => {
@@ -165,6 +167,65 @@ describe("TaskRegistry.list", () => {
 
         const list = yield* reg.list({ session_id: sess.id, include_terminal: true })
         expect(list.length).toBe(1)
+      }),
+    ),
+  )
+})
+
+describe("TaskRegistry.cleanup", () => {
+  // `cleanup_after` is stamped at done()/abandon() time from config (7 days by
+  // default); backdate it to simulate a window that has elapsed. Task ids are
+  // per-session (the PK is session_id + id), so the session must be part of the
+  // filter — keying on `id` alone reaches "T1" in every other session too.
+  const elapseWindow = (session_id: string, id: string) =>
+    Effect.sync(() =>
+      Database.use((db) =>
+        db
+          .update(TaskTable)
+          .set({ cleanup_after: Date.now() - 1000 })
+          .where(and(eq(TaskTable.session_id, session_id as never), eq(TaskTable.id, id)))
+          .run(),
+      ),
+    )
+
+  it.live("removes terminal tasks past their archive window, with their events", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const reg = yield* TaskRegistry.Service
+        const sess = yield* seedSession()
+
+        const finished = yield* reg.create({ session_id: sess.id, summary: "finished long ago" })
+        yield* reg.start({ session_id: sess.id, id: finished.id })
+        yield* reg.done({ session_id: sess.id, id: finished.id, event_summary: "done" })
+        expect((yield* reg.events({ session_id: sess.id, task_id: finished.id })).length).toBeGreaterThan(0)
+        yield* elapseWindow(sess.id, finished.id)
+
+        const live = yield* reg.create({ session_id: sess.id, summary: "still open" })
+
+        expect(yield* reg.cleanup()).toBe(1)
+
+        expect(yield* reg.get({ session_id: sess.id, id: finished.id })).toBeUndefined()
+        // The composite FK cascades, so the events went with it.
+        expect(yield* reg.events({ session_id: sess.id, task_id: finished.id })).toEqual([])
+        // An actionable task is never touched, and the row is really gone — not
+        // merely hidden: include_archived must not resurrect it.
+        expect(yield* reg.get({ session_id: sess.id, id: live.id })).toBeDefined()
+        const remaining = yield* reg.list({ session_id: sess.id, include_terminal: true, include_archived: true })
+        expect(remaining.map((t) => t.id)).toEqual([live.id])
+      }),
+    ),
+  )
+
+  it.live("keeps terminal tasks whose archive window has not elapsed", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const reg = yield* TaskRegistry.Service
+        const sess = yield* seedSession()
+        const t = yield* reg.create({ session_id: sess.id, summary: "just finished" })
+        yield* reg.done({ session_id: sess.id, id: t.id })
+
+        expect(yield* reg.cleanup()).toBe(0)
+        expect(yield* reg.get({ session_id: sess.id, id: t.id })).toBeDefined()
       }),
     ),
   )
