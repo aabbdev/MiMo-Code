@@ -88,8 +88,9 @@ export interface Interface {
   readonly events: (input: { session_id: SessionID; task_id: string }) => Effect.Effect<TaskEvent[]>
 
   /**
-   * Delete terminal tasks whose archive window (`cleanup_after`) has elapsed,
-   * with their events. Returns how many rows were removed.
+   * Delete terminal tasks older than the retention window
+   * (`checkpoint.task_archive_days`, measured against `ended_at`), with their
+   * events. Returns how many rows were removed.
    */
   readonly cleanup: () => Effect.Effect<number>
 }
@@ -390,31 +391,40 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Config.Service> = 
     })
 
     /**
-     * Remove terminal tasks whose archive window has elapsed, with their events
+     * Remove terminal tasks older than the retention window, with their events
      * (`task_event` cascades off the composite FK to `task`).
      *
      * `cleanup_after` used to be display-only: nothing ever removed a row, so a
      * long-lived project accumulated everything it had ever registered — 227
-     * tasks and 734 events on one machine, 107 of them already past their cleanup
-     * date — while the tool description promised "Terminal states clean up
-     * automatically after 7 days". This is that cleanup.
+     * tasks and 734 events on one machine — while the tool description promised
+     * "Terminal states clean up automatically after 7 days". This is that
+     * cleanup.
+     *
+     * The window is read from the CURRENT config and measured against `ended_at`,
+     * not against the `cleanup_after` stamped when the task finished: that stamp
+     * is frozen at completion time, so raising `task_archive_days` would never
+     * protect a row that already carries an elapsed one. Evaluating at sweep time
+     * makes the setting retroactive, which is what a retention policy means.
      */
     const cleanup = Effect.fn("TaskRegistry.cleanup")(function* () {
       const now = Date.now()
+      const cfg = yield* config.get()
+      const days = cfg.checkpoint?.task_archive_days ?? cfg.checkpoint?.task_cleanup_days ?? 7
+      const cutoff = now - days * DAY_MS
       const removed = Database.use((db) =>
         db
           .delete(TaskTable)
           .where(
             and(
               inArray(TaskTable.status, ["done", "abandoned"]),
-              isNotNull(TaskTable.cleanup_after),
-              lt(TaskTable.cleanup_after, now),
+              isNotNull(TaskTable.ended_at),
+              lt(TaskTable.ended_at, cutoff),
             ),
           )
           .returning({ id: TaskTable.id })
           .all(),
       )
-      if (removed.length > 0) log.info("archived tasks removed", { count: removed.length })
+      if (removed.length > 0) log.info("archived tasks removed", { count: removed.length, days })
       return removed.length
     })
 

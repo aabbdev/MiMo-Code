@@ -340,7 +340,8 @@ const InfoSchema = Schema.Struct({
           "Per-section token caps for rebuild context (renderRebuildContext). Each section is loaded up to its cap so the rebuild stays within a predictable budget.",
       }),
       task_archive_days: Schema.optional(PositiveInt).annotate({
-        description: "Number of days after task done/abandoned before it's filtered out of `list({include_archived: false})`. Rows are NOT deleted — see v9 for true GC. Default: 7.",
+        description:
+          "Retention window for terminal tasks: days after a task is done/abandoned before it stops appearing in `list` (without `include_archived`) and before it is deleted outright, with its events. Evaluated against `ended_at` at sweep time, so changing it applies to tasks that already finished. Default: 7.",
       }),
       task_cleanup_days: Schema.optional(PositiveInt).annotate({
         description: "[deprecated] Alias for task_archive_days. Will be removed in v9.",

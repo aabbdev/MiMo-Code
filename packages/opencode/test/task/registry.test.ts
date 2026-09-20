@@ -173,16 +173,17 @@ describe("TaskRegistry.list", () => {
 })
 
 describe("TaskRegistry.cleanup", () => {
-  // `cleanup_after` is stamped at done()/abandon() time from config (7 days by
-  // default); backdate it to simulate a window that has elapsed. Task ids are
+  // The sweep measures `ended_at` against the CURRENT retention window, so
+  // backdate the finish. `cleanup_after` is pushed into the past too, to prove
+  // the stamp frozen at completion time is NOT what decides. Task ids are
   // per-session (the PK is session_id + id), so the session must be part of the
   // filter — keying on `id` alone reaches "T1" in every other session too.
-  const elapseWindow = (session_id: string, id: string) =>
+  const elapseWindow = (session_id: string, id: string, daysAgo = 30) =>
     Effect.sync(() =>
       Database.use((db) =>
         db
           .update(TaskTable)
-          .set({ cleanup_after: Date.now() - 1000 })
+          .set({ ended_at: Date.now() - daysAgo * 86_400_000, cleanup_after: Date.now() - 1000 })
           .where(and(eq(TaskTable.session_id, session_id as never), eq(TaskTable.id, id)))
           .run(),
       ),
@@ -227,6 +228,27 @@ describe("TaskRegistry.cleanup", () => {
         expect(yield* reg.cleanup()).toBe(0)
         expect(yield* reg.get({ session_id: sess.id, id: t.id })).toBeDefined()
       }),
+    ),
+  )
+
+  // The window is read at sweep time, so widening it protects rows that already
+  // finished — the `cleanup_after` stamped at completion time must not decide.
+  it.live("widening the window retroactively protects an already-finished task", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const reg = yield* TaskRegistry.Service
+          const sess = yield* seedSession()
+          const t = yield* reg.create({ session_id: sess.id, summary: "finished 10 days ago" })
+          yield* reg.done({ session_id: sess.id, id: t.id })
+          yield* elapseWindow(sess.id, t.id, 10)
+
+          // 10 days old, and its stored stamp is already past — but the window is
+          // 30 days, so it stays.
+          expect(yield* reg.cleanup()).toBe(0)
+          expect(yield* reg.get({ session_id: sess.id, id: t.id })).toBeDefined()
+        }),
+      { config: { checkpoint: { task_archive_days: 30 } } },
     ),
   )
 })
