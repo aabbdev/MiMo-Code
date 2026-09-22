@@ -161,6 +161,14 @@ function stateApi(sync: ReturnType<typeof useSync>): TuiPluginApi["state"] {
       messages(sessionID) {
         return sync.data.message[sessionID]?.["main"] ?? []
       },
+      /**
+       * Cumulative cost of the session, in USD. Not derived from `messages`:
+       * those are only the newest 100 per slice, so summing them under-reports
+       * long sessions by orders of magnitude.
+       */
+      cost(sessionID) {
+        return sync.data.session_cost[sessionID] ?? 0
+      },
       status(sessionID) {
         return sync.data.session_status[sessionID]
       },

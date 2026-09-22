@@ -980,12 +980,18 @@ export type OutputFormatJsonSchema = {
 
 export type OutputFormat = OutputFormatText | OutputFormatJsonSchema
 
-export type Provenance = {
+export type HookProvenance = {
   hookPhase: "pre" | "post"
   hookIteration: number
   pluginNames: Array<string>
   hookIDs: Array<string>
 }
+
+export type MachineProvenance = {
+  machine: string
+}
+
+export type Provenance = HookProvenance | MachineProvenance
 
 export type UserMessage = {
   id: string
@@ -2617,7 +2623,7 @@ export type Config = {
      */
     reserved?: number
     /**
-     * Compact earlier than the model window. A token count (300000), a shorthand string ("300K", "1M", "50%"), or a map keyed by "<providerID>/<modelID>" with wildcards ("openai/gpt-5*"). Always clamped to the model's real window — it can only lower the compaction trigger, never raise it. 0 means no budget.
+     * Compact earlier than the model window. A token count (300000), a shorthand string ("300K", "1M", "50%") — a percentage is OF THE MODEL WINDOW — or a map keyed by "<providerID>/<modelID>" with wildcards ("openai/gpt-5*"). This sets the WORKING window; compaction then fires at 90% of it (MIMOCODE_COMPACTION_TRIGGER_RATIO), so "80%" compacts at 72% of the model window. It can only lower the trigger, never raise it: a value at or above the window is ignored (and logged). 0 means no budget.
      */
     max_context?:
       | number
@@ -2693,7 +2699,7 @@ export type Config = {
       recent_user_per_msg?: number
     }
     /**
-     * Number of days after task done/abandoned before it's filtered out of `list({include_archived: false})`. Rows are NOT deleted — see v9 for true GC. Default: 7.
+     * Retention window for terminal tasks: days after a task is done/abandoned before it stops appearing in `list` (without `include_archived`) and before it is deleted outright, with its events. Evaluated against `ended_at` at sweep time, so changing it applies to tasks that already finished. Default: 7.
      */
     task_archive_days?: number
     /**
@@ -2718,15 +2724,6 @@ export type Config = {
      * Index Claude Code memory (~/.claude/projects/<slug>/memory) and expose under scope='cc'. Default: false. Note: when enabled, every mimocode agent (build/explore/subagents) can search these memories via the builtin `memory` tool — including CC's `type: user` (your role/preferences) and `type: feedback` (your guidance) categories. CC originally writes them for future CC sessions; flipping this on widens the consumer set to mimocode agents on the same machine. Leave disabled (default) if you don't want personal context recallable from a prompt-injection-vulnerable agent.
      */
     cc_index?: boolean
-  }
-  /**
-   * Trajectory (conversation history) FTS index configuration.
-   */
-  history?: {
-    /**
-     * Which part kinds the history FTS index should cover. Defaults to text (user/assistant) + tool input + tool errors. Add 'reasoning' or 'tool_output' to grow recall at the cost of database size. Note: enabling 'tool_output' reclassifies completed tools from kind='tool_input' to kind='tool_output' (input remains searchable in the body, but kind:['tool_input'] filter will then only match pending/error tools).
-     */
-    kinds?: Array<"user_text" | "assistant_text" | "tool_input" | "tool_error" | "reasoning" | "tool_output">
   }
   dream?: {
     /**
@@ -2816,6 +2813,15 @@ export type Config = {
        * Max assistant messages cropped from the trailing streak (default 64).
        */
       max_span?: number
+    }
+    /**
+     * Turn-end uncommitted-changes soft hint (experimental).
+     */
+    uncommitted_hint?: {
+      /**
+       * After a completed user-source main turn, if the session workspace has uncommitted git changes, inject a soft hint (may repeat on later dirty user turns; hook turns never re-inject; does not force a commit). Default off.
+       */
+      enabled?: boolean
     }
     /**
      * Timeout in milliseconds for model context protocol (MCP) requests
@@ -2943,6 +2949,12 @@ export type Model = {
           field: "reasoning" | "reasoning_content" | "reasoning_details"
         }
   }
+  reasoning_options?: Array<{
+    type: string
+    values?: Array<string | null>
+    min?: number
+    max?: number
+  }>
   cost: {
     input: number
     output: number
@@ -4960,6 +4972,40 @@ export type SessionTaskResponses = {
 
 export type SessionTaskResponse = SessionTaskResponses[keyof SessionTaskResponses]
 
+export type SessionCostData = {
+  body?: never
+  path: {
+    sessionID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/session/{sessionID}/cost"
+}
+
+export type SessionCostErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * Not found
+   */
+  404: NotFoundError
+}
+
+export type SessionCostError = SessionCostErrors[keyof SessionCostErrors]
+
+export type SessionCostResponses = {
+  /**
+   * Cumulative cost in USD
+   */
+  200: number
+}
+
+export type SessionCostResponse = SessionCostResponses[keyof SessionCostResponses]
+
 export type SessionInitData = {
   body?: {
     modelID: string
@@ -5664,6 +5710,8 @@ export type SessionCommandData = {
     messageID?: string
     agent?: string
     model?: string
+    source?: "user" | "spawn" | "hook"
+    provenance?: Provenance
     arguments: string
     command: string
     /**
@@ -5998,7 +6046,7 @@ export type PermissionReplyError = PermissionReplyErrors[keyof PermissionReplyEr
 
 export type PermissionReplyResponses = {
   /**
-   * Permission processed successfully
+   * Permission processed (false when the request was no longer pending)
    */
   200: boolean
 }

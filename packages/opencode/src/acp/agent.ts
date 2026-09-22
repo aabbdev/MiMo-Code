@@ -108,7 +108,16 @@ async function sendUsageUpdate(
   }
 
   const used = msg.tokens.input + (msg.tokens.cache?.read ?? 0)
-  const totalCost = assistantMessages.reduce((sum, m) => sum + m.info.cost, 0)
+  // From the server's whole-session sum, not from `assistantMessages`: that list
+  // is a page (the endpoint returns up to 1000 without a limit), so summing it
+  // under-reports any session longer than the page.
+  const totalCost = await sdk.session
+    .cost({ sessionID, directory }, { throwOnError: true })
+    .then((x) => x.data ?? 0)
+    .catch((error) => {
+      log.error("failed to fetch session cost for usage update", { error })
+      return 0
+    })
 
   await connection
     .sessionUpdate({

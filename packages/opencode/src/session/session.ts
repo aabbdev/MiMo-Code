@@ -8,7 +8,7 @@ import { type ProviderMetadata, type LanguageModelUsage } from "ai"
 import { Flag } from "../flag/flag"
 import { InstallationVersion } from "../installation/version"
 
-import { Database, NotFoundError, eq, and, gte, isNull, desc, like, inArray, lt } from "../storage"
+import { Database, NotFoundError, eq, and, gte, isNull, desc, like, inArray, lt, sql } from "../storage"
 import { SyncEvent } from "../sync"
 import type { SQL } from "../storage"
 import { PartTable, SessionTable, MessageTable } from "./session.sql"
@@ -493,6 +493,13 @@ export interface Interface {
   readonly clearRevert: (sessionID: SessionID) => Effect.Effect<void>
   readonly setSummary: (input: { sessionID: SessionID; summary: Info["summary"] }) => Effect.Effect<void>
   readonly diff: (sessionID: SessionID) => Effect.Effect<Snapshot.FileDiff[]>
+
+  /**
+   * Cumulative cost of the session's assistant messages, summed over every
+   * message in the session rather than over a page of them.
+   */
+  readonly totalCost: (input: { sessionID: SessionID }) => Effect.Effect<number>
+
   readonly messages: (input: {
     sessionID: SessionID
     limit?: number
@@ -914,6 +921,34 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       return Array.from(MessageV2.stream(input.sessionID, { agentID: input.agentID })).reverse()
     })
 
+    /**
+     * Cumulative cost of a session's assistant messages.
+     *
+     * Cost lives inside the message JSON, so this scans the session's rows (the
+     * `session_id` prefix of `message_session_time_created_id_idx` bounds it)
+     * rather than reading an indexed column. Measured: ~115 ms on a 12k-message
+     * session, ~13 ms on a typical one — cheap enough to seed a total with once,
+     * too expensive to call per step. Callers that need a live value should seed
+     * from this and then add the per-message deltas they observe.
+     *
+     * Exists because every other cost readout summed whatever messages it
+     * happened to hold: the TUI holds the newest 100 (it showed $0.50 for a
+     * session that had spent $17.30) and ACP at most 1000.
+     */
+    const totalCost = Effect.fn("Session.totalCost")(function* (input: { sessionID: SessionID }) {
+      const role = sql`json_extract(${MessageTable.data}, '$.role')`
+      const row = Database.use((db) =>
+        db
+          .select({
+            cost: sql<number>`coalesce(sum(json_extract(${MessageTable.data}, '$.cost')), 0)`,
+          })
+          .from(MessageTable)
+          .where(and(eq(MessageTable.session_id, input.sessionID), eq(role, "assistant")))
+          .get(),
+      )
+      return row?.cost ?? 0
+    })
+
     const removeMessage = Effect.fn("Session.removeMessage")(function* (input: {
       sessionID: SessionID
       messageID: MessageID
@@ -995,6 +1030,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
       clearRevert,
       setSummary,
       diff,
+      totalCost,
       messages,
       children,
       remove,

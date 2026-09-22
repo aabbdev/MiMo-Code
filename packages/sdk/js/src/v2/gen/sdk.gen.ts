@@ -147,6 +147,8 @@ import type {
   SessionChildrenResponses,
   SessionCommandErrors,
   SessionCommandResponses,
+  SessionCostErrors,
+  SessionCostResponses,
   SessionCreateErrors,
   SessionCreateResponses,
   SessionDeleteErrors,
@@ -2126,6 +2128,38 @@ export class Session2 extends HeyApiClient {
   }
 
   /**
+   * Get cumulative session cost
+   *
+   * Total cost of every assistant message in the session, summed over the whole session rather than over a page of messages. Callers that display a live value should seed from this once and then add the per-message deltas.
+   */
+  public cost<ThrowOnError extends boolean = false>(
+    parameters: {
+      sessionID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "sessionID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<SessionCostResponses, SessionCostErrors, ThrowOnError>({
+      url: "/session/{sessionID}/cost",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
    * Initialize session
    *
    * Analyze the current application and create an AGENTS.md file with project-specific agent configurations.
@@ -2778,6 +2812,8 @@ export class Session2 extends HeyApiClient {
       messageID?: string
       agent?: string
       model?: string
+      source?: "user" | "spawn" | "hook"
+      provenance?: Provenance
       arguments?: string
       command?: string
       titleLocale?: string
@@ -2823,6 +2859,8 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "messageID" },
             { in: "body", key: "agent" },
             { in: "body", key: "model" },
+            { in: "body", key: "source" },
+            { in: "body", key: "provenance" },
             { in: "body", key: "arguments" },
             { in: "body", key: "command" },
             { in: "body", key: "titleLocale" },
@@ -3159,7 +3197,7 @@ export class Permission extends HeyApiClient {
   /**
    * Respond to permission request
    *
-   * Approve or deny a permission request from the AI assistant.
+   * Approve or deny a permission request from the AI assistant. Returns false when no such request is pending — e.g. the instance holding it was disposed and rebuilt — so a client can drop a stale prompt instead of waiting on a reply that can never land.
    */
   public reply<ThrowOnError extends boolean = false>(
     parameters: {

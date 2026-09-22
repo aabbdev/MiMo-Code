@@ -279,6 +279,11 @@ export type TuiState = {
     todo: (sessionID: string) => ReadonlyArray<TuiSidebarTodoItem>
     task: (sessionID: string) => ReadonlyArray<TuiSidebarTaskItem>
     messages: (sessionID: string) => ReadonlyArray<Message>
+    /**
+     * Cumulative session cost in USD. Not the sum of `messages`: the store holds
+     * only the newest 100 per slice, so summing them under-reports a long session.
+     */
+    cost: (sessionID: string) => number
     status: (sessionID: string) => SessionStatus | undefined
     goal: (sessionID: string) => TuiSidebarGoal | undefined
     cwd: (sessionID: string) => string | undefined

@@ -294,6 +294,45 @@ export const SessionRoutes = lazy(() =>
         return c.json(tasks)
       },
     )
+    .get(
+      "/:sessionID/cost",
+      describeRoute({
+        summary: "Get cumulative session cost",
+        description:
+          "Total cost of every assistant message in the session, summed over the whole session rather than over a page of messages. Callers that display a live value should seed from this once and then add the per-message deltas.",
+        operationId: "session.cost",
+        responses: {
+          200: {
+            description: "Cumulative cost in USD",
+            content: {
+              "application/json": {
+                schema: resolver(z.number()),
+              },
+            },
+          },
+          ...errors(400, 404),
+        },
+      }),
+      validator(
+        "param",
+        z.object({
+          sessionID: SessionID.zod,
+        }),
+      ),
+      async (c) => {
+        const sessionID = c.req.valid("param").sessionID
+        const cost = await runRequest(
+          "SessionRoutes.cost",
+          c,
+          Effect.gen(function* () {
+            const session = yield* Session.Service
+            yield* session.get(sessionID)
+            return yield* session.totalCost({ sessionID })
+          }),
+        )
+        return c.json(cost)
+      },
+    )
     .post(
       "/",
       describeRoute({

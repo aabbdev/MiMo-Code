@@ -16,7 +16,11 @@ const money = new Intl.NumberFormat("en-US", {
 export function ContextSidebar(props: { api: TuiPluginApi; session_id: string }) {
   const theme = () => props.api.theme.current
   const msg = createMemo(() => props.api.state.session.messages(props.session_id))
-  const cost = createMemo(() => msg().reduce((sum, item) => sum + (item.role === "assistant" ? item.cost : 0), 0))
+  // Not a sum over `msg()`: the store keeps only the newest 100 messages per
+  // slice, and summing those is what made "spent" plateau instead of accumulate
+  // ($0.50 shown for a session that had spent $17.30). The server seeds the
+  // whole-session total and message deltas keep it current.
+  const cost = createMemo(() => props.api.state.session.cost(props.session_id))
 
   const [tick, setTick] = createSignal(Date.now())
 

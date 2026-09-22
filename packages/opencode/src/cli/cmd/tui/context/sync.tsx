@@ -247,6 +247,14 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       todo: {
         [sessionID: string]: Todo[]
       }
+      /**
+       * Cumulative session cost, in USD. Seeded from the server's whole-session
+       * sum and then kept live from message deltas — summing the messages we hold
+       * cannot work, because the store is trimmed to the newest 100.
+       */
+      session_cost: {
+        [sessionID: string]: number
+      }
       task: {
         [sessionID: string]: Task[]
       }
@@ -304,6 +312,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       session_goal: {},
       session_diff: {},
       todo: {},
+      session_cost: {},
       task: {},
       message: {},
       part: {},
@@ -377,6 +386,80 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
     }
     let syncedWorkspace = project.workspace.current()
     let syncedDirectory = sdk.directory
+
+    // Cumulative-cost bookkeeping. A total cannot be summed out of the store:
+    // each slice keeps only the newest 100 messages, and the window is trimmed on
+    // every insert. So the server seeds the whole-session figure (`session_cost`,
+    // fetched in `sync`) and each message update contributes the difference
+    // against the cost we already held for it. Deltas apply only to a seeded
+    // session, so an unseeded one is never accumulated from a bogus zero base,
+    // and a message we have never seen contributes its full cost — it cannot have
+    // been covered by the seed.
+    function addCost(sessionID: string, delta: number) {
+      if (delta === 0) return
+      const current = store.session_cost[sessionID]
+      if (typeof current !== "number") return
+      setStore("session_cost", sessionID, current + delta)
+    }
+
+    function messageCost(sessionID: string, agentID: string, messageID: string) {
+      const bucket = store.message[sessionID]?.[agentID]
+      if (!bucket) return 0
+      const result = Binary.search(bucket, messageID, (m) => m.id)
+      if (!result.found) return 0
+      const message = bucket[result.index]
+      return message.role === "assistant" ? (message.cost ?? 0) : 0
+    }
+
+    // Bucket every message by agentID. Pre-rewire the TUI dropped non-main
+    // messages here; now subagent slices are first-class buckets and the session
+    // view renders whichever bucket matches route.agentID.
+    function applyMessage(info: Message) {
+      const sid = info.sessionID
+      const aid = info.agentID ?? "main"
+      if (!store.message[sid]) {
+        setStore("message", sid, { [aid]: [info] })
+        return
+      }
+      if (!store.message[sid][aid]) {
+        setStore("message", sid, aid, [info])
+        return
+      }
+      const messages = store.message[sid][aid]
+      const result = Binary.search(messages, info.id, (m) => m.id)
+      if (result.found) {
+        setStore("message", sid, aid, result.index, reconcile(info))
+        return
+      }
+      setStore(
+        "message",
+        sid,
+        aid,
+        produce((draft) => {
+          draft.splice(result.index, 0, info)
+        }),
+      )
+      const updated = store.message[sid][aid]
+      if (updated.length > 100) {
+        const oldest = updated[0]
+        batch(() => {
+          setStore(
+            "message",
+            sid,
+            aid,
+            produce((draft) => {
+              draft.shift()
+            }),
+          )
+          setStore(
+            "part",
+            produce((draft) => {
+              delete draft[oldest.id]
+            }),
+          )
+        })
+      }
+    }
 
     event.subscribe((event) => {
       switch (event.type) {
@@ -610,53 +693,10 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         }
 
         case "message.updated": {
-          // Bucket every message by agentID. Pre-rewire the TUI dropped non-main
-          // messages here; now subagent slices are first-class buckets and the
-          // session view renders whichever bucket matches route.agentID.
-          const sid = event.properties.info.sessionID
-          const aid = event.properties.info.agentID ?? "main"
-          if (!store.message[sid]) {
-            setStore("message", sid, { [aid]: [event.properties.info] })
-            break
-          }
-          if (!store.message[sid][aid]) {
-            setStore("message", sid, aid, [event.properties.info])
-            break
-          }
-          const messages = store.message[sid][aid]
-          const result = Binary.search(messages, event.properties.info.id, (m) => m.id)
-          if (result.found) {
-            setStore("message", sid, aid, result.index, reconcile(event.properties.info))
-            break
-          }
-          setStore(
-            "message",
-            sid,
-            aid,
-            produce((draft) => {
-              draft.splice(result.index, 0, event.properties.info)
-            }),
-          )
-          const updated = store.message[sid][aid]
-          if (updated.length > 100) {
-            const oldest = updated[0]
-            batch(() => {
-              setStore(
-                "message",
-                sid,
-                aid,
-                produce((draft) => {
-                  draft.shift()
-                }),
-              )
-              setStore(
-                "part",
-                produce((draft) => {
-                  delete draft[oldest.id]
-                }),
-              )
-            })
-          }
+          const info = event.properties.info
+          const previous = messageCost(info.sessionID, info.agentID ?? "main", info.id)
+          applyMessage(info)
+          addCost(info.sessionID, (info.role === "assistant" ? (info.cost ?? 0) : 0) - previous)
           break
         }
         case "message.removed": {
@@ -667,6 +707,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             const messages = buckets[aid]
             const result = Binary.search(messages, event.properties.messageID, (m) => m.id)
             if (result.found) {
+              // A removed message takes its cost back out of the total, the same
+              // way it took it in.
+              const removed = messages[result.index]
               setStore(
                 "message",
                 sid,
@@ -675,6 +718,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
                   draft.splice(result.index, 1)
                 }),
               )
+              addCost(sid, -(removed.role === "assistant" ? (removed.cost ?? 0) : 0))
               break
             }
           }
@@ -1028,7 +1072,7 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
         },
         async sync(sessionID: string) {
           if (fullSyncedSessions.has(sessionID)) return
-          const [session, messages, recovery, todo, diff, actors, task, children] = await Promise.all([
+          const [session, messages, recovery, todo, diff, actors, task, children, cost] = await Promise.all([
             sdk.client.session.get({ sessionID }, { throwOnError: true }),
             // ⚠️`limit` is ONE budget shared across every agent bucket, not a
             // per-bucket limit. A session whose real `main` history is crowded out
@@ -1054,6 +1098,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             // (tool/session.ts:128). See Session.children for why "workflow
             // subagent sessions" is not a third kind.
             sdk.client.session.children({ sessionID, visible: true }).catch(() => undefined),
+            // Whole-session cost: the messages above are a page, so they cannot
+            // be summed into a total.
+            sdk.client.session.cost({ sessionID }).catch(() => undefined),
           ])
           if (deletedSessions.has(sessionID)) return
           applySession(session.data!)
@@ -1063,6 +1110,11 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
               draft.todo[sessionID] = todo.data ?? []
               draft.session_recovery[sessionID] = recovery.data ?? []
               draft.task[sessionID] = task.data ?? []
+              // Seed the cumulative cost. Only when the server answered: a failed
+              // call must leave the previous total rather than reset it to zero,
+              // and an unseeded session skips delta accounting below rather than
+              // accumulating deltas from a bogus 0 base.
+              if (typeof cost?.data === "number") draft.session_cost[sessionID] = cost.data
               const flat = (messages.data ?? []).map((x) => x.info)
               // Server returns messages id-ordered and message.updated keeps that order; the footer's post-/rebuild pending-detection deliberately does NOT depend on it (it keys off checkpoint coveredUpTo, model.ts), so reordering here won't resurface the stale-context bug.
               draft.message[sessionID] = bucketMessages(flat)
