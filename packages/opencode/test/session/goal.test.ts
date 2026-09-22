@@ -103,4 +103,35 @@ describe("Goal state machine", () => {
     expect(got?.condition).toBe("b")
     expect(got?.react).toBe(0)
   })
+
+  // The cap bounds re-entries within ONE turn, so a genuine user turn gives the
+  // goal a fresh budget instead of inheriting a counter spent by a previous
+  // (possibly interrupted) run — which is what made the cap look arbitrary.
+  test("resetReact clears the budget without dropping the goal", async () => {
+    await using tmp = await tmpdir({})
+    const got = await runGoal(tmp.path, (goal) =>
+      Effect.gen(function* () {
+        yield* goal.set(ses, "keep me")
+        yield* goal.bumpReact(ses)
+        yield* goal.bumpReact(ses)
+        yield* goal.resetReact(ses)
+        const current = yield* goal.get(ses)
+        return { react: current?.react, condition: current?.condition, next: yield* goal.bumpReact(ses) }
+      }),
+    )
+    expect(got.react).toBe(0)
+    expect(got.condition).toBe("keep me")
+    expect(got.next).toBe(1)
+  })
+
+  test("resetReact with no active goal is a no-op", async () => {
+    await using tmp = await tmpdir({})
+    const got = await runGoal(tmp.path, (goal) =>
+      Effect.gen(function* () {
+        yield* goal.resetReact(ses)
+        return yield* goal.get(ses)
+      }),
+    )
+    expect(got).toBeUndefined()
+  })
 })

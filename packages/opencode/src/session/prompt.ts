@@ -246,10 +246,11 @@ export function stableRootTitle(input: { agent: string | undefined; parentID: st
 }
 
 /**
- * Cap on goal-driven main-loop re-entries per turn — the safety valve against
- * a never-satisfiable condition burning tokens forever. Higher than spawned
- * actors' MAX_PRE_REACT (=3) because main-session goals are usually larger.
- * TODO: lift to mimocode.json config (e.g. session.maxGoalReact).
+ * Default cap on goal-driven main-loop re-entries within ONE turn — the safety
+ * valve against a never-satisfiable condition burning tokens forever. Higher than
+ * spawned actors' MAX_PRE_REACT (=3) because main-session goals are usually
+ * larger. Overridable per session with `session.maxGoalReact`; the budget is
+ * reset by each genuine user turn (see SessionGoal.resetReact).
  */
 const MAX_GOAL_REACT = 12
 
@@ -3416,6 +3417,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     const prompt: (input: PromptInput) => Effect.Effect<MessageV2.WithParts> = Effect.fn("SessionPrompt.prompt")(
       function* (input: PromptInput) {
         const session = yield* sessions.get(input.sessionID)
+        // A genuine user turn starts a fresh goal re-entry budget. The cap is
+        // documented as per-turn but `react` was only reset by `goal set`, so a
+        // goal that outlived an interrupted run inherited a spent counter and the
+        // cap fired at a moment the user could not account for. The judge's own
+        // re-entry does not come through here (goalGate writes its message
+        // directly), so this fires only on real user input.
+        if ((input.source ?? "user") === "user") yield* goal.resetReact(input.sessionID)
         if (
           hookNonTextRequiresProvenance({
             source: input.source,
@@ -4147,11 +4155,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
           }
 
           const count = yield* goal.bumpReact(sessionID)
-          if (count > MAX_GOAL_REACT) {
+          const cap = (yield* config.get()).session?.maxGoalReact ?? MAX_GOAL_REACT
+          if (count > cap) {
             yield* slog.warn("goal hit MAX_GOAL_REACT cap; allowing stop", {
               sessionID,
               condition: active.condition,
               count,
+              cap,
             })
             yield* bus.publish(Goal.Event.Updated, {
               sessionID,

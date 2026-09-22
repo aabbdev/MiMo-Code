@@ -85,6 +85,12 @@ export interface Interface {
   /** Increment the re-entry counter, returning the new count. */
   readonly bumpReact: (sessionID: SessionID) => Effect.Effect<number>
   /**
+   * Give the goal a fresh re-entry budget. Called when a genuine user turn
+   * begins: the cap bounds re-entries within ONE turn, so a new turn must not
+   * inherit a counter spent by a previous (possibly interrupted) run.
+   */
+  readonly resetReact: (sessionID: SessionID) => Effect.Effect<void>
+  /**
    * Run the judge over the conversation against the active goal's condition.
    * `msgs` is the main thread's message list; it is converted to native model
    * messages (tool calls/results/images preserved) so the judge independently
@@ -139,6 +145,19 @@ export const layer = Layer.effect(
       if (!goal) return 0
       goal.react += 1
       return goal.react
+    })
+
+    /**
+     * Clear the re-entry budget. `react` was only ever set to 0 by `set`, so a
+     * goal that outlived an interrupted run kept its spent counter and the cap
+     * could fire at a moment the user could not account for. The cap bounds
+     * re-entries within ONE turn, so a genuine user turn resets it.
+     */
+    const resetReact = Effect.fn("SessionGoal.resetReact")(function* (sessionID: SessionID) {
+      const data = yield* InstanceState.get(state)
+      const goal = data.goals.get(sessionID)
+      if (!goal) return
+      goal.react = 0
     })
 
     const evaluate = Effect.fn("SessionGoal.evaluate")(function* (input: {
@@ -235,7 +254,7 @@ export const layer = Layer.effect(
       return yield* Effect.promise(() => generateObject(params).then((r) => Verdict.parse(r.object)))
     })
 
-    return Service.of({ set, get, clear, bumpReact, evaluate })
+    return Service.of({ set, get, clear, bumpReact, resetReact, evaluate })
   }),
 )
 

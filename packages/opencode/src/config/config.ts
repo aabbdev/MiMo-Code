@@ -281,6 +281,14 @@ const InfoSchema = Schema.Struct({
       ),
     }),
   ),
+  session: Schema.optional(
+    Schema.Struct({
+      maxGoalReact: Schema.optional(PositiveInt).annotate({
+        description:
+          "How many times an unmet `/goal` may re-enter the main loop within one user turn before the goal is abandoned. Bounds a never-satisfiable condition; a fresh user turn starts a new budget. Default: 12.",
+      }),
+    }),
+  ).annotate({ description: "Main-session loop behaviour." }),
   checkpoint: Schema.optional(
     Schema.Struct({
       thresholds: Schema.optional(Schema.Array(Schema.String)).annotate({
