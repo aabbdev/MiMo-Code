@@ -1025,6 +1025,21 @@ export const Model = Schema.Struct({
   name: Schema.String,
   family: Schema.optional(Schema.String),
   capabilities: ProviderCapabilities,
+  /**
+   * Reasoning controls the model declares, straight from models.dev. `effort`
+   * levels become thinking variants (see ProviderTransform.variants); a `null`
+   * level means "off" upstream and is not offered.
+   */
+  reasoning_options: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        type: Schema.String,
+        values: Schema.optional(Schema.Array(Schema.Union([Schema.String, Schema.Null]))),
+        min: Schema.optional(Schema.Number),
+        max: Schema.optional(Schema.Number),
+      }),
+    ),
+  ),
   cost: ProviderCost,
   limit: ProviderLimit,
   status: Schema.Literals(["alpha", "beta", "deprecated", "active"]),
@@ -1155,6 +1170,7 @@ function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model
     status: model.status ?? "active",
     headers: {},
     options: {},
+    reasoning_options: model.reasoning_options,
     cost: cost(model.cost),
     limit: {
       context: model.limit.context,

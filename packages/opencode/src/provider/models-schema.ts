@@ -25,6 +25,25 @@ export const Model = z.object({
   release_date: z.string(),
   attachment: z.boolean(),
   reasoning: z.boolean(),
+  /**
+   * Which reasoning controls the model accepts, as upstream models.dev declares
+   * them. `effort` carries the levels worth offering as thinking variants
+   * (possibly including `null`, which upstream uses for "off" — see
+   * `sarvam/sarvam-105b`); `toggle` and `budget_tokens` (the latter with
+   * `min`/`max`) are other shapes the catalog uses. Read through
+   * `ProviderTransform.variants`, which only honours the values for providers
+   * whose SDK serializes them as `reasoningEffort`.
+   */
+  reasoning_options: z
+    .array(
+      z.object({
+        type: z.string(),
+        values: z.array(z.union([z.string(), z.null()])).optional(),
+        min: z.number().optional(),
+        max: z.number().optional(),
+      }),
+    )
+    .optional(),
   temperature: z.boolean(),
   tool_call: z.boolean(),
   /**

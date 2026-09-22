@@ -1256,7 +1256,7 @@ function anthropicAdaptiveEfforts(apiId: string): string[] | null {
   return null
 }
 
-export function variants(model: Provider.Model): Record<string, Record<string, any>> {
+function declaredVariants(model: Provider.Model): Record<string, Record<string, any>> {
   if (!model.capabilities.reasoning) return {}
 
   const id = model.id.toLowerCase()
@@ -1651,6 +1651,58 @@ export function variants(model: Provider.Model): Record<string, Record<string, a
       return {}
   }
   return {}
+}
+
+/**
+ * npm packages whose SDK serializes `reasoningEffort` onto the wire as
+ * `reasoning_effort`. Providers outside this set need a different field
+ * (openrouter sends `reasoning.effort`, Anthropic a thinking budget, Google a
+ * `thinkingLevel`), so a catalog effort may only be applied through these.
+ */
+const REASONING_EFFORT_NPM = new Set([
+  "@ai-sdk/openai-compatible",
+  "@ai-sdk/togetherai",
+  "@ai-sdk/cerebras",
+  "@ai-sdk/xai",
+  "@ai-sdk/deepinfra",
+  "venice-ai-sdk-provider",
+])
+
+/**
+ * Thinking variants taken from the model's own catalog entry (models.dev
+ * `reasoning_options`), for providers that can serialize them.
+ *
+ * A `null` level means "off" upstream (`sarvam/sarvam-105b` declares
+ * `[null, "low", "medium", "high"]`) and is not a value to send, so it is
+ * dropped rather than offered as a variant.
+ */
+function catalogEffortVariants(model: Provider.Model): Record<string, { reasoningEffort: string }> {
+  if (!REASONING_EFFORT_NPM.has(model.api.npm)) return {}
+  const values = model.reasoning_options
+    ?.find((option) => option.type === "effort")
+    ?.values?.filter((value): value is string => typeof value === "string")
+  if (!values || values.length === 0) return {}
+  return Object.fromEntries(values.map((value) => [value, { reasoningEffort: value }]))
+}
+
+/**
+ * Thinking variants for a model.
+ *
+ * The hand-written branches above are authoritative when they produce something:
+ * they encode what was verified against each provider's API. But they key off the
+ * model id and provider, so they miss every model served by someone else — a
+ * `deepseek` id on any provider other than DeepSeek itself got NO thinking
+ * control at all, even though the catalog declares the levels and Together
+ * accepts and validates them (`low | high | max`, a bad value being a 400).
+ *
+ * So the catalog fills the gaps rather than replacing anything: a model that
+ * already has variants keeps them exactly, and one that has none picks up what
+ * models.dev says it supports.
+ */
+export function variants(model: Provider.Model): Record<string, Record<string, any>> {
+  const declared = declaredVariants(model)
+  if (Object.keys(declared).length > 0) return declared
+  return catalogEffortVariants(model)
 }
 
 export function options(input: {

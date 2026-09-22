@@ -3495,6 +3495,81 @@ describe("ProviderTransform.variants", () => {
     expect(result).toEqual({})
   })
 
+  // The catalog already declares the levels a model accepts, but `variants` used
+  // to ignore it — so a deepseek model served by anyone but DeepSeek had no
+  // thinking control at all, even though Together accepts low/high/max for
+  // `deepseek-ai/DeepSeek-V4.1-Flash` and rejects a bad value with a 400.
+  test("catalog effort levels fill the gap a provider the id checks miss", () => {
+    const model = createMockModel({
+      id: "deepseek-ai/DeepSeek-V4.1-Flash",
+      providerID: "togetherai",
+      api: {
+        id: "deepseek-ai/DeepSeek-V4.1-Flash",
+        url: "https://api.together.xyz/v1",
+        npm: "@ai-sdk/togetherai",
+      },
+      reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+    })
+    expect(ProviderTransform.variants(model)).toEqual({
+      low: { reasoningEffort: "low" },
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+  })
+
+  test("hand-written variants win over the catalog", () => {
+    const model = createMockModel({
+      id: "deepseek/deepseek-v4-pro",
+      providerID: "deepseek",
+      api: {
+        id: "deepseek-v4-pro",
+        url: "https://api.deepseek.com",
+        npm: "@ai-sdk/openai-compatible",
+      },
+      reasoning_options: [{ type: "effort", values: ["low", "high", "max"] }],
+    })
+    // Verified against the real API; the catalog is not allowed to widen it.
+    expect(ProviderTransform.variants(model)).toEqual({
+      high: { reasoningEffort: "high" },
+      max: { reasoningEffort: "max" },
+    })
+  })
+
+  test("a catalog effort is not applied to a provider that sends a different field", () => {
+    const model = createMockModel({
+      id: "some-model",
+      providerID: "somewhere",
+      api: {
+        id: "some-model",
+        url: "https://api.example.com",
+        npm: "@ai-sdk/some-unmapped-thing",
+      },
+      reasoning_options: [{ type: "effort", values: ["low", "high"] }],
+    })
+    expect(ProviderTransform.variants(model)).toEqual({})
+  })
+
+  // Upstream uses `null` for "off" — `sarvam/sarvam-105b` declares
+  // `[null, "low", "medium", "high"]`. It is not a value to put on the wire, so
+  // it must not become a variant.
+  test("a null effort level is dropped rather than offered", () => {
+    const model = createMockModel({
+      id: "sarvam-105b",
+      providerID: "sarvam",
+      api: {
+        id: "sarvam-105b",
+        url: "https://api.sarvam.ai/v1",
+        npm: "@ai-sdk/openai-compatible",
+      },
+      reasoning_options: [{ type: "effort", values: [null, "low", "medium", "high"] }],
+    })
+    expect(ProviderTransform.variants(model)).toEqual({
+      low: { reasoningEffort: "low" },
+      medium: { reasoningEffort: "medium" },
+      high: { reasoningEffort: "high" },
+    })
+  })
+
   test("minimax returns empty object", () => {
     const model = createMockModel({
       id: "minimax/minimax-model",
