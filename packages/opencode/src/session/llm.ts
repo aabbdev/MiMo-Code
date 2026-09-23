@@ -814,6 +814,17 @@ const live: Layer.Layer<
           .slice(0, 5)
           .map(([name, size]) => `${name}:${size}`)
           .join(","),
+        // The system array is a LIST of blocks from different sources — the agent
+        // prompt, the skill roster, memory, MCP instructions, guardrails — so its
+        // total cannot say which one to shrink. Labelled by each block's own first
+        // line so the log is self-describing, and only the heaviest are printed:
+        // the tail is noise.
+        systemBlocks: system
+          .map((block) => [block, block.trimStart().split("\n")[0]?.slice(0, 64) ?? ""] as const)
+          .toSorted((a, b) => b[0].length - a[0].length)
+          .slice(0, 8)
+          .map(([block, label]) => `${block.length}:${label}`)
+          .join(" | "),
       })
       if (Flag.MIMOCODE_TOOL_AUDIT) {
         l.debug("tools.audit", {

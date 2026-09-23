@@ -33,7 +33,7 @@ import { EffectBridge } from "@/effect"
 import { acquire, disposeSession } from "../rlm/kernel"
 import { makeScreener, makeSubCallerFactory, SCREEN_BATCH_CEILING } from "../rlm/host"
 import { overheadEntries, type OverheadEntry } from "./overhead"
-import { injectPayload, loadPayload } from "../rlm/payload"
+import { chunkText, injectPayload, loadPayload } from "../rlm/payload"
 import { TOOL_SCRIPT_ALIASES, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
 import type { HarnessMode } from "./gpt"
 import * as Tool from "./tool"
@@ -148,6 +148,37 @@ export function groundingOf(
   }
 }
 
+/**
+ * The most recent tool result in this session that is worth keeping.
+ *
+ * Reads `ctx.messages`, so it needs no id from the model: "the thing that just
+ * filled my window" is unambiguous, and asking for a call id would be a step the
+ * model can get wrong.
+ *
+ * A result the harness truncated says so and names a file holding the whole of it
+ * (`fullOutputPath`). Preferring that file is the POINT of keeping: the part the
+ * context budget hid from the model becomes reachable to code and sub-calls, which
+ * is the difference between losing a 10 MB grep and using it.
+ */
+export function lastToolResult(
+  messages: Array<{ info: { role: string }; parts: any[] }>,
+  ownCallID?: string,
+): { text: string; tool: string; complete: boolean } | undefined {
+  let found: { text: string; tool: string; complete: boolean } | undefined
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type !== "tool" || part.state?.status !== "completed") continue
+      if (part.tool === "repl" || part.tool === "rlm") continue
+      if (ownCallID !== undefined && part.callID === ownCallID) continue
+      const output = String(part.state.output ?? "")
+      if (output.length === 0) continue
+      const saved = /Full output saved to:\s*(\S+)/.exec(output)
+      found = { text: saved ? saved[1]! : output, tool: String(part.tool), complete: saved === null }
+    }
+  }
+  return found
+}
+
 /** Per-session state. The kernel is keyed by session; the budget has to live
  * beside it, and it is deliberately module-level: this becomes an Effect service
  * the day a second consumer needs it, and not before. */
@@ -199,6 +230,8 @@ type ReplMetadata = {
   nestedCalls?: number
   subcallsLeft?: number
   charsLeft?: number
+  /** Set by `keep`: the variable a tool result was stored in, and how big it was. */
+  kept?: { name: string; chars: number; parts: number; tool: string; complete: boolean }
   /** Share of the payload ever shown to the agent. Below
    * `GROUNDING_FLOOR_PCT` with no sub-call, an answer about content is an
    * invention — see `groundingOf`. */
@@ -246,7 +279,17 @@ export const ReplTool = Tool.define(
           .describe(
             `Nested tool calls allowed in THIS step (default ${MAX_TOOL_CALLS_DEFAULT}). Your own tools are reachable as \`tools.<name>(args)\` — the same permission pipeline as a direct call.`,
           ),
-        reset: z.boolean().optional().describe("Drop the kernel and its budget, freeing the payload's memory immediately."),
+        keep: z
+          .object({
+            name: z
+              .string()
+              .describe("Guest variable to store it in. Also sets `<name>_parts`, so `llm_query` can run over the pieces."),
+            from: z.literal("last").optional().describe("Which tool result to keep. Default and only value: the most recent."),
+          })
+          .optional()
+          .describe(
+            `Move a tool result INTO the kernel instead of re-reading it. Call this after a tool returned more than you want in front of you: its full text becomes a variable, METADATA ONLY comes back, and you iterate over it with code and sub-calls. A result the harness truncated is kept at its FULL length, which is the point — the part you never saw becomes reachable.`,
+          ),
         model: z.string().optional().describe("Model for the sub-calls. Defaults to the lite/small model, else the session's own."),
       }),
       execute: (
@@ -255,6 +298,7 @@ export const ReplTool = Tool.define(
           code?: string
           max_tool_calls?: number
           reset?: boolean
+          keep?: { name: string; from?: "last" }
           model?: string
         },
         ctx: Tool.Context,
@@ -279,7 +323,7 @@ export const ReplTool = Tool.define(
             return reply("kernel dropped; the next `load` starts a fresh one", { reset: true })
           }
 
-          if (!params.load && params.code === undefined) return refuse("provide `load`, `code` or `reset`")
+          if (!params.load && params.code === undefined && !params.keep) return refuse("provide `load`, `code`, `keep` or `reset`")
 
           const users = ctx.messages.flatMap((message) => (message.info.role === "user" ? [message.info] : []))
           const user = users[users.length - 1]
@@ -354,6 +398,7 @@ export const ReplTool = Tool.define(
           const sections: string[] = []
           let payloadChars: number | undefined
           let parts: number | undefined
+          let keptOnce: ReplMetadata["kept"]
           let nestedCallCount = 0
 
           if (params.load) {
@@ -376,6 +421,38 @@ export const ReplTool = Tool.define(
               loaded.success.text.slice(0, PRELUDE_PREFIX_CHARS),
               "</kernel>",
             )
+          }
+
+          if (params.keep) {
+            const found = lastToolResult(ctx.messages, ctx.callID)
+            if (!found) {
+              return refuse(
+                "no completed tool result to keep — `keep` moves the result of another tool into the kernel, so it must follow one",
+              )
+            }
+            // The storage file is the full text; the output was cut. Read it here
+            // rather than in the guest: the file is the host's, and the guest has no
+            // filesystem by design.
+            const kept = yield* Effect.tryPromise({
+              try: async () => (found.complete ? found.text : await Bun.file(found.text).text()),
+              catch: (err) => new Error(err instanceof Error ? err.message : String(err)),
+            }).pipe(Effect.result)
+            if (kept._tag === "Failure") return refuse(`could not read the saved output (${found.text}): ${kept.failure.message}`)
+            const text = kept.success
+            const chunks = chunkText(params.keep.name, text)
+            // PARTS only, never the joined text as well: holding both is the
+            // +92 MB mistake `injectPayload` records for a 4.5 MB payload, and
+            // `parts.join("")` is always available if a script wants the whole.
+            kernel.success.set(`${params.keep.name}_parts`, chunks.map((chunk) => chunk.text))
+            kernel.success.set(`${params.keep.name}_names`, chunks.map((chunk) => chunk.name))
+            sections.push(
+              `<kept name="${params.keep.name}" from="${found.tool}" chars="${text.length}" parts="${chunks.length}" complete="${found.complete}" />`,
+              found.complete
+                ? `That result is now \`${params.keep.name}_parts\` (names in \`${params.keep.name}_names\`). It is NOT in front of you — read it with code and llm_query, and \`join\` the parts only if you need the whole.`
+                : `The tool result was TRUNCATED, so what is now \`${params.keep.name}_parts\` is the COMPLETE output — ${text.length} characters the context budget had hidden from you. It is NOT in front of you — read it with code and llm_query.`,
+            )
+            keptOnce = { name: params.keep.name, chars: text.length, parts: chunks.length, tool: found.tool, complete: found.complete }
+            payloadChars = payloadChars ?? text.length
           }
 
           if (params.code !== undefined) {
@@ -513,6 +590,7 @@ export const ReplTool = Tool.define(
           )
           return reply(sections.join("\n"), {
             payloadChars: state.payloadChars,
+            kept: keptOnce,
             parts,
             nestedCalls: nestedCallCount,
             subcallsLeft: spendLeft(),

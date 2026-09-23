@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { injectPayload } from "../../src/rlm/payload"
-import { charge, GROUNDING_FLOOR_PCT, groundingOf, newSpend } from "../../src/tool/repl"
+import { charge, GROUNDING_FLOOR_PCT, groundingOf, lastToolResult, newSpend } from "../../src/tool/repl"
 
 describe("repl sub-call budget", () => {
   test("both bounds refuse, and neither implies the other", () => {
@@ -99,5 +99,48 @@ describe("repl grounding", () => {
   test("the share is of the payload, and rides on every step", () => {
     const half = groundingOf({ observedChars: 2_453_317, warned: true }, 4_906_634, 0, 9)
     expect(half.observedPct).toBeCloseTo(50, 6)
+  })
+})
+
+describe("repl keep: which tool result moves into the kernel", () => {
+  const tool = (name: string, output: string, status = "completed") => ({
+    type: "tool",
+    tool: name,
+    callID: `call_${name}`,
+    state: { status, output },
+  })
+  const user = { info: { role: "user" }, parts: [{ type: "text", text: "hi" }] }
+  const assistant = (...parts: any[]) => ({ info: { role: "assistant" }, parts })
+
+  test("takes the most recent completed result, not the first", () => {
+    const found = lastToolResult([
+      assistant(tool("grep", "old hits")),
+      assistant(tool("exec", "new hits")),
+    ])
+    expect(found).toEqual({ text: "new hits", tool: "exec", complete: true })
+  })
+
+  test("an unfinished result is not a result", () => {
+    // A tool still running has no output to keep, and one that failed has an error.
+    expect(lastToolResult([assistant(tool("grep", "partial", "running"))])).toBeUndefined()
+    expect(lastToolResult([assistant(tool("grep", "", "completed"))])).toBeUndefined()
+  })
+
+  test("its own output is skipped, so keep cannot feed on itself", () => {
+    const found = lastToolResult([assistant(tool("grep", "hits"), tool("repl", "REPL OUTPUT"))])
+    expect(found?.tool).toBe("grep")
+  })
+
+  test("a truncated result points at the FULL text, which is the whole point", () => {
+    // The harness saves what it cut and names the file. Keeping the inline summary
+    // would hand the kernel exactly what the model already had.
+    const found = lastToolResult([
+      assistant(tool("grep", "12000 hits…\n\nFull output saved to: /tmp/example/full.txt")),
+    ])
+    expect(found).toEqual({ text: "/tmp/example/full.txt", tool: "grep", complete: false })
+  })
+
+  test("user turns carry no tool parts", () => {
+    expect(lastToolResult([user])).toBeUndefined()
   })
 })
