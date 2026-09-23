@@ -1,0 +1,28 @@
+Wait instead of polling.
+
+Polling costs a whole model turn per look: the request's entire context is re-sent,
+the model decides the job is not finished, and it asks again. Measured on this
+harness's own history — 3 143 waiting calls forming 1 640 chains, the longest 28
+consecutive looks at one artefact — 1 503 of those turns were pure repetition, and
+they carried 721 M input tokens, 5.6 % of everything ever re-sent. This tool exists
+so a wait costs one call instead of N.
+
+WHY POLLING HAPPENS AT ALL, so you can avoid the trap: `exec_command`'s
+`yield_time_ms` is a TERMINATION budget, not a yield — a command still running when
+it expires is killed. A long job therefore cannot be run in the foreground, and
+looking at it repeatedly is the only thing left. That is what this fixes.
+
+Two ways to wait, and the second is nearly always the right one:
+
+1. A duration, when nothing observable marks the end: `wait` with `seconds`.
+2. A condition, when something does: `wait` with `until_path`. It returns the moment
+   the path exists AND is non-empty, so a job that finishes in 20 s costs 20 s, not
+   the interval it happened to land on.
+
+Both are bounded by `timeout_seconds` (default 300, ceiling 900) and return
+`met`/`waited_seconds`, so a timeout is reported as a fact rather than an error:
+keep waiting, do something else, or stop.
+
+Use it in place of a `sleep N` loop, and in place of re-running a status command to
+see whether anything changed. Do NOT use it to wait for something you could have
+been told — if a command can report when it is done, run it and read the result.

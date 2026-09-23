@@ -129,7 +129,7 @@ describe("tool.write", () => {
   })
 
   describe("file permissions", () => {
-    it.live("sets file permissions when writing sensitive data", () =>
+    it.live("creates the file with the process's default mode, neither widening nor restricting it", () =>
       provideTmpdirInstance((dir) =>
         Effect.gen(function* () {
           const filepath = path.join(dir, "sensitive.json")
@@ -137,7 +137,15 @@ describe("tool.write", () => {
 
           if (process.platform !== "win32") {
             const stats = yield* Effect.promise(() => fs.stat(filepath))
-            expect(stats.mode & 0o777).toBe(0o644)
+            // `write` sets no mode — it calls writeWithDirs — so the only true
+            // statement about the result is the OS default: 0o666 masked by the
+            // process's umask. This asserted a literal 0o644, which passed only on
+            // umask 022 machines and failed on umask 002 (measured: 0o664), while
+            // the test's name claimed a "sensitive data" contract the tool has never
+            // had. What is worth asserting is that the tool changes nothing: exactly
+            // the default, and no execute bit.
+            expect(stats.mode & 0o777).toBe(0o666 & ~process.umask())
+            expect(stats.mode & 0o111).toBe(0)
           }
         }),
       ),

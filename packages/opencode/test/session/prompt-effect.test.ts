@@ -1604,7 +1604,7 @@ it.live("locks system and harness to the first user query", () =>
           .filter((message) => JSON.stringify(message.content).includes("first system prompt"))
           .map((message) => message.role),
       ).toEqual(["system"])
-      expect((input.tools as Array<Record<string, unknown>>).map(wireToolName)).toEqual(["exec"])
+      expect((input.tools as Array<Record<string, unknown>>).map(wireToolName).sort()).toEqual(["exec", "wait"])
 
       yield* prompt.prompt({
         sessionID: chat.id,
@@ -1894,7 +1894,7 @@ it.live("uses the frozen system and appends the compaction prompt to the existin
       expect(serialized).not.toContain("first query")
       expect(serialized).not.toContain("second query kept verbatim")
       expect(serialized).not.toContain("third query kept verbatim")
-      expect((request.tools as Array<Record<string, unknown>>).map(wireToolName)).toEqual(["exec"])
+      expect((request.tools as Array<Record<string, unknown>>).map(wireToolName).sort()).toEqual(["exec", "wait"])
       expect((yield* sessions.get(chat.id)).prompt).toEqual({
         system: marker,
         systemMode: "replace-agent",
@@ -2862,8 +2862,8 @@ mcpIt.live("MCP structuredContent is persisted and reaches the model alongside t
       const requests = yield* llm.inputs
       const initialTools = requests[0].tools as Array<Record<string, unknown>>
       const loadedTools = requests[1].tools as Array<Record<string, unknown>>
-      expect(initialTools.map(wireToolName)).toEqual(["exec"])
-      expect(loadedTools.map(wireToolName)).toEqual(["exec"])
+      expect(initialTools.map(wireToolName).sort()).toEqual(["exec", "wait"])
+      expect(loadedTools.map(wireToolName).sort()).toEqual(["exec", "wait"])
       expect(JSON.stringify(initialTools)).not.toContain("private_error_code")
       expect(JSON.stringify(initialTools)).not.toContain("Secret nested MCP window selector")
 
@@ -2910,7 +2910,7 @@ mcpIt.live("exec can call a catalogued MCP tool without loading its outer schema
       expect(tool?.state.output).toContain('"windowID": 42')
 
       const tools = (yield* llm.inputs)[0].tools as Array<Record<string, unknown>>
-      expect(tools.map(wireToolName)).toEqual(["exec"])
+      expect(tools.map(wireToolName).sort()).toEqual(["exec", "wait"])
       expect(JSON.stringify(tools)).not.toContain("private_window_id")
     }),
     { git: true, config: providerCfg },
@@ -3045,7 +3045,7 @@ mcpIt.live(
         yield* prompt.loop({ sessionID: session.id })
 
         const tools = (yield* llm.inputs)[0].tools as Array<Record<string, unknown>>
-        expect(tools.map(wireToolName)).toEqual(["exec"])
+        expect(tools.map(wireToolName).sort()).toEqual(["exec", "wait"])
         expect(JSON.stringify(tools)).not.toContain("private_window_id")
         expect(JSON.stringify(tools)).not.toContain("Secret nested MCP error selector")
       }),
@@ -3075,7 +3075,7 @@ mcpIt.live(
         yield* prompt.loop({ sessionID: session.id })
 
         const request = (yield* llm.inputs)[0]
-        expect((request.tools as Array<Record<string, unknown>>).map(wireToolName)).toEqual(["exec"])
+        expect((request.tools as Array<Record<string, unknown>>).map(wireToolName).sort()).toEqual(["exec", "wait"])
         expect(JSON.stringify(request)).toContain("You are Codex")
         expect(JSON.stringify(request)).toContain("tools.apply_patch")
       }),

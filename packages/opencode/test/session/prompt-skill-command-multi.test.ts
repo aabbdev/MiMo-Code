@@ -84,11 +84,15 @@ describe("skill command with additional mentions", () => {
           expect(system.indexOf("COMMAND_SYSTEM_MARKER")).toBeLessThan(system.indexOf("Skills available in this session:"))
           expect(system.indexOf("Skills available in this session:")).toBeLessThan(system.indexOf("PROFILE_INSTRUCTION_MARKER"))
           expect(system.trim().endsWith("PROFILE_INSTRUCTION_MARKER")).toBe(true)
-          expect((request.tools as Array<Record<string, unknown>>).map((tool) =>
-            typeof tool.function === "object" && tool.function && "name" in tool.function
-              ? String(tool.function.name)
-              : "",
-          )).toEqual(["exec"])
+          expect(
+            (request.tools as Array<Record<string, unknown>>)
+              .map((tool) =>
+                typeof tool.function === "object" && tool.function && "name" in tool.function
+                  ? String(tool.function.name)
+                  : "",
+              )
+              .sort(),
+          ).toEqual(["exec", "wait"])
         }),
         { git: true, config: providerCfg },
       ),

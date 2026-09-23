@@ -74,6 +74,7 @@ import { resolveInvocationStyle } from "./invocation-style"
 import { BuiltinWorkflow } from "@/workflow/builtin"
 import { ToolScriptTool, renderToolScriptDeclarations } from "./tool-script"
 import { ReplTool } from "./repl"
+import { WaitTool } from "./wait"
 import { LLM } from "../session/llm"
 import { GPT_TOP_LEVEL_TOOLS, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
 import { type HarnessMode, usesGPTToolset } from "./gpt"
@@ -185,6 +186,7 @@ export const layer = Layer.effect(
     const workflowtool = yield* WorkflowTool
     const toolscript = yield* ToolScriptTool
     const repltool = yield* ReplTool
+    const waittool = yield* WaitTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -285,6 +287,7 @@ export const layer = Layer.effect(
           workflow: Tool.init(workflowtool),
           toolscript: Tool.init(toolscript),
           repl: Tool.init(repltool),
+          wait: Tool.init(waittool),
         })
 
         return {
@@ -311,6 +314,7 @@ export const layer = Layer.effect(
             ...(Flag.MIMOCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
             tool.planexit,
             tool.memory,
+            tool.wait,
             tool.history,
             tool.task,
             tool.toolscript,

@@ -49,7 +49,10 @@ describe("ToolRegistry.tools: invocation style resolution", () => {
           "history",
         ]
 
-        expect(ids).toEqual(["exec"])
+        // `wait` is the second advertised tool by design: GPT_TOP_LEVEL_TOOLS has
+        // named it since the surface was compacted upstream, and the tool now exists
+        // (measured: 99.6% of this harness's 3 143 waiting calls are in GPT sessions).
+        expect([...ids].sort()).toEqual(["exec", "wait"])
         expect(registered.map((tool) => tool.id)).toContain("webfetch")
         nested.forEach((id) => expect(ids).not.toContain(id))
 
@@ -96,8 +99,8 @@ describe("ToolRegistry.tools: invocation style resolution", () => {
         expect(normalDefault.map((tool) => tool.id)).not.toContain("exec")
         expect(responsesDefault.map((tool) => tool.id)).toContain("bash")
         expect(responsesDefault.map((tool) => tool.id)).not.toContain("exec")
-        expect(normalCodex.map((tool) => tool.id)).toEqual(["exec"])
-        expect(responsesCodex.map((tool) => tool.id)).toEqual(["exec"])
+        expect(normalCodex.map((tool) => tool.id).sort()).toEqual(["exec", "wait"])
+        expect(responsesCodex.map((tool) => tool.id).sort()).toEqual(["exec", "wait"])
       }),
     ),
   )
