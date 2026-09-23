@@ -6,6 +6,7 @@ import { iife } from "@/util/iife"
 import { Log } from "@/util"
 import { withTimeout } from "@/util/timeout"
 import { LocalContext } from "../util"
+import * as RlmKernel from "../rlm/kernel"
 import * as Project from "./project"
 import { WorkspaceContext } from "@/control-plane/workspace-context"
 import { parse as pathParse } from "path"
@@ -285,6 +286,9 @@ export const Instance = {
 
     disposal.all = iife(async () => {
       Log.Default.info("disposing all instances")
+      // Session kernels are keyed by session, not by directory, so a per-instance
+      // teardown cannot reach them; the whole set goes here.
+      RlmKernel.disposeEverything()
       const entries = [...cache.entries()]
       for (const [key, value] of entries) {
         if (cache.get(key) !== value) continue

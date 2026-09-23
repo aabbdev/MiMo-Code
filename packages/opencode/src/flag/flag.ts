@@ -396,6 +396,24 @@ export const Flag = {
   // Defaults to OFF: exec (tool_script orchestration) is registered only for
   // GPT-toolset models. Opt in here to expose it to every model.
   MIMOCODE_ENABLE_EXEC_TOOL: truthy("MIMOCODE_ENABLE_EXEC_TOOL"),
+  // Defaults to OFF (opt-IN). `rlm` runs a Recursive Language Model loop: the
+  // payload goes into a persistent sandboxed REPL and a separate model iterates
+  // over it, so the input never enters a context window. It is off by default
+  // because it spawns a retained QuickJS realm per session (up to 256 MiB), runs
+  // its own model turns that the session's cost readout does not yet attribute,
+  // and is a young code path — not because it is unsafe: the realm has no
+  // filesystem, no network and no imports, and every budget it spends is capped.
+  // Set MIMOCODE_EXPERIMENTAL_RLM_TOOL=true to expose it.
+  MIMOCODE_EXPERIMENTAL_RLM_TOOL: truthy("MIMOCODE_EXPERIMENTAL_RLM_TOOL"),
+  // Defaults to OFF (opt-IN). `repl` is the session's own kernel: `load`
+  // externalizes a payload and returns metadata only, `code` iterates over it,
+  // and the kernel lives for the session — so the agent keeps every other tool
+  // while it works. Off by default for the same reasons as `rlm` (a retained
+  // QuickJS realm per session holding the payload), plus one of its own: a
+  // kernel that outlives a call needs a way out, so `reset` and the idle sweep
+  // are the only things standing between it and the session's whole lifetime.
+  // Set MIMOCODE_EXPERIMENTAL_REPL_TOOL=true to expose it.
+  MIMOCODE_EXPERIMENTAL_REPL_TOOL: truthy("MIMOCODE_EXPERIMENTAL_REPL_TOOL"),
   // Defaults to OFF for non-GPT models; GPT models enable MCP Tool Search in
   // SessionPrompt regardless of this flag.
   //

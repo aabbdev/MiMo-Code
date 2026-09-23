@@ -9,6 +9,7 @@ import { Flag } from "../flag/flag"
 import { InstallationVersion } from "../installation/version"
 
 import { Database, NotFoundError, eq, and, gte, isNull, desc, like, inArray, lt, sql } from "../storage"
+import { disposeMatching } from "../rlm/kernel"
 import { SyncEvent } from "../sync"
 import type { SQL } from "../storage"
 import { PartTable, SessionTable, MessageTable } from "./session.sql"
@@ -707,6 +708,10 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
 
     const remove: Interface["remove"] = Effect.fnUntraced(function* (sessionID: SessionID) {
       yield* promptLock(sessionID).withPermits(1)(removeUnlocked(sessionID))
+      // A session's kernel holds the whole externalized payload, so it must not
+      // outlive the session that loaded it. Released here rather than left to the
+      // idle sweep, which would keep the payload resident for up to half an hour.
+      yield* Effect.sync(() => disposeMatching(sessionID))
     })
 
     const updateMessage = <T extends MessageV2.Info>(msg: T): Effect.Effect<T> =>

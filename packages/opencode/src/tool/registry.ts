@@ -73,6 +73,9 @@ import * as BashInteractive from "./bash-interactive"
 import { resolveInvocationStyle } from "./invocation-style"
 import { BuiltinWorkflow } from "@/workflow/builtin"
 import { ToolScriptTool, renderToolScriptDeclarations } from "./tool-script"
+import { RlmTool } from "./rlm"
+import { ReplTool } from "./repl"
+import { LLM } from "../session/llm"
 import { GPT_TOP_LEVEL_TOOLS, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
 import { type HarnessMode, usesGPTToolset } from "./gpt"
 
@@ -182,6 +185,8 @@ export const layer = Layer.effect(
     const sessiontitle = yield* SessionTitleTool
     const workflowtool = yield* WorkflowTool
     const toolscript = yield* ToolScriptTool
+    const rlmtool = yield* RlmTool
+    const repltool = yield* ReplTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -281,6 +286,8 @@ export const layer = Layer.effect(
           sessiontitle: Tool.init(sessiontitle),
           workflow: Tool.init(workflowtool),
           toolscript: Tool.init(toolscript),
+          rlm: Tool.init(rlmtool),
+          repl: Tool.init(repltool),
         })
 
         return {
@@ -313,6 +320,8 @@ export const layer = Layer.effect(
             ...(Flag.MIMOCODE_EXPERIMENTAL_CRON ? [tool.cron] : []),
             Flag.MIMOCODE_EXPERIMENTAL_ORCHESTRATOR ? tool.session : tool.sessiontitle,
             ...(Flag.MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL ? [tool.workflow] : []),
+            ...(Flag.MIMOCODE_EXPERIMENTAL_RLM_TOOL ? [tool.rlm] : []),
+            ...(Flag.MIMOCODE_EXPERIMENTAL_REPL_TOOL ? [tool.repl] : []),
           ],
           actor: tool.actor,
           read: tool.read,
@@ -548,7 +557,14 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(Skill.defaultLayer),
     Layer.provide(Agent.defaultLayer),
     Layer.provide(Session.defaultLayer),
-    Layer.provide(Provider.defaultLayer),
+    // The `rlm` tool runs its own model turns, so the registry needs LLM — and
+    // it must be provided HERE rather than required from the consumer. A bare
+    // Layer.mergeAll does not wire siblings together, so an unmet requirement
+    // would surface as a type error in every layer that composes the registry
+    // beside LLM; supplying it locally keeps this layer self-contained, the
+    // same shape LLM.defaultLayer already uses for Provider. Merged into one
+    // provide() because this pipe is already at TypeScript's 20-argument limit.
+    Layer.provide(Layer.mergeAll(Provider.defaultLayer, LLM.defaultLayer)),
     Layer.provide(LSP.defaultLayer),
     Layer.provide(Instruction.defaultLayer),
     Layer.provide(AppFileSystem.defaultLayer),

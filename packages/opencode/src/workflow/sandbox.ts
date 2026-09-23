@@ -46,7 +46,7 @@ const DEFAULT_MEMORY = 64 * 1024 * 1024
 
 /** Guest rejection values dump as {name, message, stack} objects — render them
  * like a normal Error string instead of leaking a JSON blob into the message. */
-function formatGuestError(err: unknown): string {
+export function formatGuestError(err: unknown): string {
   if (typeof err === "string") return err
   if (err && typeof err === "object" && "message" in err) {
     const e = err as { name?: string; message: string; stack?: string }
@@ -330,7 +330,7 @@ function injectHooks(
 }
 
 /** Marshal a host JS value INTO the guest (by copy via JSON for structured data). */
-function marshalIn(vm: QuickJSContext, value: unknown): QuickJSHandle {
+export function marshalIn(vm: QuickJSContext, value: unknown): QuickJSHandle {
   if (value === undefined || value === null) return vm.undefined
   // newString truncates at the first NUL byte (C-string boundary). Route
   // NUL-containing strings through the JSON path below, where \0 is escaped

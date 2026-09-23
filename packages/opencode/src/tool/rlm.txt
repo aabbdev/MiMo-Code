@@ -1,0 +1,11 @@
+Answer a question about a payload that is TOO LARGE FOR THE MODEL'S CONTEXT WINDOW.
+
+Read this first, because it decides whether to use this tool at all: if the payload fits in your window, reading it directly is cheaper, faster and at least as accurate. Measured on a 2.3 MB tree, ingesting it cost $0.177 and 28 s and covered more files than this tool did at $0.214 and 61 s. This tool exists for the payload that CANNOT be read — past the window there is no competition, because a direct request is rejected outright (a 6.8 MB tree resolves to 1.73 M tokens against a 1.05 M window).
+
+It runs a Recursive Language Model loop (arXiv 2512.24601) with self-reflective program search (arXiv 2603.15653). The payload is loaded into persistent sandboxed JavaScript REPLs as `context` and `context_parts`; several independent trajectories are sampled in parallel, each writing code to slice and aggregate the payload and calling `llm_query` / `llm_query_batched` to ask questions of chunks. Only a truncated prefix of what a REPL prints returns to the model, so the payload never enters any context window. The trajectories are then compared by their own verbalized confidence and reasoning length, and the most confident-and-concise one is returned.
+
+Do NOT use it for a payload you can simply read — `read` and `grep` are better in every way below the window.
+
+ONE SHOT ONLY. This tool discards its kernel when it answers, so a FOLLOW-UP question about the same payload re-reads and re-pays for all of it. If you expect more than one question, use `repl` instead: it keeps the payload in a kernel that lives for the session, and every later question starts from what is already there.
+
+Bounded on five axes, all reported: candidates, iterations, sub-calls, characters sent to sub-models, and total wall-clock time (30 minutes).
