@@ -3,10 +3,14 @@
  *
  * This is the architecture the two papers describe and oh-my-pi ships: the payload
  * is EXTERNALIZED into a persistent environment, and the agent's own loop is the
- * loop that iterates over it. There is no second prompt and no second loop — the
- * tool that owns a completion (`rlm`) still exists, but as an automated CONSUMER
- * of the same kernel, for the one thing a session cannot do: sample several
- * trajectories and select among them.
+ * loop that iterates over it. There is no second prompt and no second loop — which
+ * is also why this is the only RLM surface left: an earlier tool owned a closed loop
+ * per call (its own prompt, its own history, re-sent at every step, discarded when
+ * it answered) and it was removed for being dominated by this one, measured at 2.2x
+ * the cost on the same two questions. What it carried that this cannot — sampling K
+ * independent trajectories and selecting among them — was never measured to earn
+ * that price, and its isolation is reachable as `actor` with a `general` subagent,
+ * which inherits this tool.
  *
  * Three operations, and the split between the first two is the whole idea:
  *
@@ -91,8 +95,8 @@ export function charge(state: Spend, count: number, volume: number): Spend {
 /**
  * A payload's grounding state, beside its budget.
  *
- * `rlm` used to own this instrument and it is the one thing that had to survive
- * its removal: the run it caught printed names and sizes, made ZERO sub-calls, had
+ * This instrument was the one thing that had to survive the closed-loop tool that
+ * introduced it: the run it caught printed names and sizes, made ZERO sub-calls, had
  * seen under 1 % of the payload, and still returned a confident 10 500-character
  * description of 119 files built from their FILENAMES (1 of 5 spot-checks right).
  * In a session kernel the same failure is structurally cheaper to fall into —
@@ -106,8 +110,7 @@ export function newGrounding(): Grounding {
 }
 
 /** Below this share of the payload ever shown, an answer that describes the
- * payload was not grounded in it. Same floor `rlm` used, kept so the two
- * instruments would have agreed. */
+ * payload was not grounded in it. */
 export const GROUNDING_FLOOR_PCT = 5
 
 /**
@@ -399,14 +402,10 @@ export const ReplTool = Tool.define(
                     }
                   : undefined,
               )
-              // `repl` and `rlm` are excluded on purpose: a nested `repl` would
-              // re-enter this same kernel mid-step, and a nested `rlm` would spawn
-              // candidate kernels inside a session kernel. Recursion here buys
-              // nothing and costs a realm per level.
-            ).filter(
-              (def) =>
-                !TOOL_SCRIPT_EXCLUDED.has(def.id) && def.id !== "repl" && def.id !== "rlm" && def.id !== "toolscript",
-            )
+              // `repl` is excluded on purpose: a nested `repl` would re-enter
+              // this same kernel mid-step. Recursion here buys nothing and costs
+              // a realm per level.
+            ).filter((def) => !TOOL_SCRIPT_EXCLUDED.has(def.id) && def.id !== "repl" && def.id !== "toolscript")
             const byId = new Map(defs.map((def) => [def.id, def]))
             const mcpTools = (ctx.extra?.execMcp as { current?: Record<string, AiTool> } | undefined)?.current ?? {}
             const mcpById = new Map(Object.entries(mcpTools).filter(([id]) => !byId.has(id)))

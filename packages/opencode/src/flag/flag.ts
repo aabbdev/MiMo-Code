@@ -396,24 +396,11 @@ export const Flag = {
   // Defaults to OFF: exec (tool_script orchestration) is registered only for
   // GPT-toolset models. Opt in here to expose it to every model.
   MIMOCODE_ENABLE_EXEC_TOOL: truthy("MIMOCODE_ENABLE_EXEC_TOOL"),
-  // Defaults to OFF (opt-IN). `rlm` runs a Recursive Language Model loop: the
-  // payload goes into a persistent sandboxed REPL and a separate model iterates
-  // over it, so the input never enters a context window. It is the SPECIALIZED
-  // consumer of the same kernel `repl` exposes — it exists for the one thing a
-  // session cannot do, sampling K independent trajectories and voting on them,
-  // and that multiplies the bill by construction: a measured K=3 run cost 2.8x the
-  // single-trajectory floor for one full read. It also spawns a realm per
-  // candidate (up to 256 MiB each) and is a young code path. Not because it is
-  // unsafe: the realm has no filesystem, no network and no imports, every budget
-  // it spends is capped, and its spend is charged to the session like any other
-  // model call. Set MIMOCODE_EXPERIMENTAL_RLM_TOOL=true to expose it.
-  MIMOCODE_EXPERIMENTAL_RLM_TOOL: truthy("MIMOCODE_EXPERIMENTAL_RLM_TOOL"),
   // Defaults to ON (opt-OUT). `repl` is the session's own kernel: `load`
   // externalizes a payload and returns metadata only, `code` iterates over it,
   // and the kernel lives for the session — so the agent keeps every other tool
-  // while it works. Measured against `rlm` on two questions about the same 4.9 MB
-  // tree: $0.078 and 66 s against $0.174 and 223 s, because one line of reasoning
-  // reads only what it needs where K closed loops each re-read their own.
+  // while it works. Measured on two questions about the same 4.9 MB tree: $0.078
+  // and 66 s, because one line of reasoning reads only what it needs.
   //
   // On by default because it costs nothing until it is used — no realm is created
   // by arming it, only by a `load` — and because its absence was the costliest

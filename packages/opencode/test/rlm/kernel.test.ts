@@ -276,36 +276,6 @@ describe("persistent kernel", () => {
     }
   })
 
-  test("rlm_query reaches the host, and is refused when the depth forbids it", async () => {
-    const id = "ses-kernel-nested"
-    const kernel = await acquire(id)
-    const seen: string[] = []
-    try {
-      const step = await kernel.run("const a = await rlm_query('SUB-CONTEXT', 'what is it?'); console.log(a)", {
-        llmQuery: noop,
-        llmQueryBatched: noop,
-        rlmQuery: async (text, question) => {
-          seen.push(`${String(text)}|${String(question)}`)
-          return "nested answer"
-        },
-      })
-      expect(step.error).toBeUndefined()
-      expect(step.logs).toEqual(["nested answer"])
-      expect(seen).toEqual(["SUB-CONTEXT|what is it?"])
-
-      // Bound only when the caller allows that depth; otherwise the guest is told so
-      // in words rather than hitting an undefined function.
-      const refused = await kernel.run("try { await rlm_query('x', 'y') } catch (e) { console.log(e.message) }", {
-        llmQuery: noop,
-        llmQueryBatched: noop,
-      })
-      expect(refused.error).toBeUndefined()
-      expect(refused.logs.join(" ")).toContain("disabled at this depth")
-    } finally {
-      disposeSession(id)
-    }
-  })
-
   test("two sessions do not share a realm, and one session's death does not touch the other", async () => {
     const a = "ses-rlm-a"
     const b = "ses-rlm-b"

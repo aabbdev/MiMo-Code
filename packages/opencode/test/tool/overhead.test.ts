@@ -47,7 +47,7 @@ describe("overheadEntries", () => {
     expect(merged[0]).toEqual(entry({ cost: 3, tokensIn: 30, tokensOut: 200, cacheRead: 10 }))
   })
 
-  test("two spends on different models stay apart, because rlm's root and sub-calls are not the same bill", () => {
+  test("two spends on different models stay apart, because one call can pay two models", () => {
     const merged = overheadEntries([entry({ model: "root-model" }), entry({ model: "lite-model" })])
     expect(merged.map((value) => value.model).sort()).toEqual(["lite-model", "root-model"])
   })

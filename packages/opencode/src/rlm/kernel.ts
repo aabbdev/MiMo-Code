@@ -68,14 +68,6 @@ export type RunContext = {
    */
   callTool?: HostFn
   /**
-   * A nested RLM over a sub-context, reachable from the guest as
-   * `rlm_query(text, question)`. Depth > 1 in the paper's terms: the trajectory
-   * spawns a whole RLM loop rather than a single sub-call, for sub-tasks that
-   * themselves need chunking, aggregation or several steps. Bound only when the
-   * caller allows that depth, and it always charges the parent's budget.
-   */
-  rlmQuery?: HostFn
-  /**
    * A cheap first pass over an index of the payload: `(question, index) => indices
    * worth reading`. Bound by the caller because it makes model calls, and it is
    * what lets a trajectory narrow a 462-part payload before paying to read it.
@@ -159,10 +151,6 @@ globalThis.screen = async (question, previewChars) => {
     }));
     return await __screen(String(question), index);
   } catch (e) { throw __asError(e); }
-};
-// A whole nested RLM over a sub-context, for a sub-task too hard for one call.
-globalThis.rlm_query = async (context, question) => {
-  try { return await __rlmQuery(String(context), String(question)); } catch (e) { throw __asError(e); }
 };
 globalThis.ask_about = (index, question) => {
   if (!Array.isArray(globalThis.context_parts)) throw new Error("no payload is loaded: call load first");
@@ -413,8 +401,6 @@ async function build(sessionID: string): Promise<Entry> {
       __llmQueryBatched: (prompts) => host?.llmQueryBatched(prompts) ?? Promise.reject(new Error("no sub-model bound")),
       __callTool: (name, args) =>
         host?.callTool ? host.callTool(name, args) : Promise.reject(new Error("this kernel has no tool bridge")),
-      __rlmQuery: (text, question) =>
-        host?.rlmQuery ? host.rlmQuery(text, question) : Promise.reject(new Error("rlm_query is disabled at this depth")),
       __screen: (question, index) =>
         host?.screen ? host.screen(question, index) : Promise.reject(new Error("screening is not available here")),
     },
@@ -445,7 +431,6 @@ async function build(sessionID: string): Promise<Entry> {
         llmQuery: ctx.llmQuery,
         llmQueryBatched: ctx.llmQueryBatched,
         callTool: ctx.callTool,
-        rlmQuery: ctx.rlmQuery,
         screen: ctx.screen,
       }
       state = {

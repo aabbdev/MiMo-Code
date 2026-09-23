@@ -1,7 +1,7 @@
 /**
  * Real model spend a tool incurred OUTSIDE the request that called it.
  *
- * `rlm` and `repl` talk to a model on their own, so the session never sees that
+ * `repl` talks to a model on its own, so the session never sees that
  * spend in any request's usage — which means every readout built on message cost
  * silently omitted it. Measured before this existed: a session that spent $0.6601
  * was reported as $0.0151, a 43× understatement, and it was the most expensive
@@ -11,10 +11,10 @@
  * the calling message's `cost`, so the whole-session aggregate, its route and the
  * sidebar's deltas all pick it up without knowing this exists.
  *
- * One entry per (provider, model), because the spend goes to different models:
- * `rlm`'s root turns run on the session's model while its sub-calls run on the
- * lite tier, and attributing both to one of them would make a per-model view
- * wrong.
+ * Entries are keyed by (provider, model) rather than summed into one figure: a
+ * tool may pay two models in one call — a sub-call runs on the lite tier while
+ * anything the caller pays for runs on the session's model — and attributing both
+ * to one of them would make a per-model view wrong.
  *
  * Same rule as the max-mode ensemble overhead in the processor: added to `cost`
  * and to the per-model metrics, NEVER to `tokens`, which must stay the request's
@@ -32,9 +32,8 @@ export type OverheadEntry = {
 
 export const OVERHEAD_KEY = "overhead"
 
-/** Merge entries naming the same model — `rlm`'s root and sub-call model are the
- * same whenever no lite tier is configured — so a tool can build its list
- * naively. */
+/** Merge entries naming the same model — a tool's two models can be the same
+ * whenever no lite tier is configured — so a tool can build its list naively. */
 export function overheadEntries(entries: OverheadEntry[]): OverheadEntry[] {
   const merged = entries.reduce((acc, entry) => {
     const key = `${entry.provider}/${entry.model}`

@@ -372,8 +372,8 @@ export const layer: Layer.Layer<
         yield* detectTryBest(part)
         yield* settleToolCall(toolCallID)
 
-        // Spend a tool incurred on its own account — `rlm`'s and `repl`'s
-        // sub-calls are model calls the session's own usage never sees. Added to
+        // Spend a tool incurred on its own account — `repl`'s sub-calls are model
+        // calls the session's own usage never sees. Added to
         // the CALLING message's cost so every readout built on message cost
         // (the whole-session aggregate, its route, the sidebar's deltas, ACP)
         // picks it up without knowing this exists. Measured before this: a session

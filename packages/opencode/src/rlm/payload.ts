@@ -2,7 +2,7 @@
  * Turning files into a payload, for every consumer of the kernel.
  *
  * Kept out of the tools because both layers need it and they must agree exactly:
- * the automated `rlm` consumer and the session-native `repl`. If they diverged,
+ * the session kernel and anything that loads a payload for it. If they diverged,
  * "the same payload" would mean two different things depending on which one
  * loaded it, and every cost and coverage number would be comparing unlike things.
  *

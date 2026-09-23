@@ -1,13 +1,11 @@
 /**
  * The wiring a sub-call needs, in one place.
  *
- * Both consumers of the kernel talk to a sub-model — the automated `rlm` loop and
- * the session-native `repl` — and the wiring is not trivial: resolve the lite tier
- * with a fallback, stream with no tools and a replacing system prompt, and account
- * for the tokens. Written twice it drifted the moment one of them changed, so it
- * lives here and each consumer adds only what is its own: `rlm` charges a
- * per-trajectory budget and tallies per candidate, `repl` charges the payload's
- * budget and reports what is left.
+ * Talking to a sub-model is not trivial: resolve the lite tier with a fallback,
+ * stream with no tools and a replacing system prompt, price what came back with
+ * its cache split, and account for the spend. It lives here so the session kernel
+ * adds only what is its own — the payload's budget and what is left of it — beside
+ * the wiring every consumer would otherwise have to reimplement.
  */
 import { Effect, Stream } from "effect"
 import type { ModelMessage } from "ai"

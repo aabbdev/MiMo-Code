@@ -58,10 +58,10 @@ describe("injectPayload", () => {
 })
 
 describe("repl grounding", () => {
-  // The defect this instrument exists to catch, measured on rlm before it moved
-  // here: a run that printed names and sizes, made ZERO sub-calls, had seen under
-  // 1 % of the payload, and returned a confident 10 500-character description of
-  // 119 files built from their filenames — 1 of 5 spot-checks right.
+  // The defect this instrument exists to catch, measured before it moved here: a
+  // run that printed names and sizes, made ZERO sub-calls, had seen under 1 % of the
+  // payload, and returned a confident 10 500-character description of 119 files
+  // built from their filenames — 1 of 5 spot-checks right.
   const loaded = () => ({ observedChars: 0, warned: false })
 
   test("loading is not an ungrounded answer, so nothing is said before a code step", () => {
