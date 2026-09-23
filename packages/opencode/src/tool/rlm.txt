@@ -6,6 +6,6 @@ It runs a Recursive Language Model loop (arXiv 2512.24601) with self-reflective 
 
 Do NOT use it for a payload you can simply read — `read` and `grep` are better in every way below the window.
 
-ONE SHOT ONLY. This tool discards its kernel when it answers, so a FOLLOW-UP question about the same payload re-reads and re-pays for all of it. If you expect more than one question, use `repl` instead: it keeps the payload in a kernel that lives for the session, and every later question starts from what is already there.
+ONE SHOT ONLY. Each call runs its own closed loop — its own system prompt and iteration history, re-sent at every step — and discards its kernel when it answers. Measured on two questions about the same 4.9 MB tree: two calls cost $0.378 and 508 s, where loading the payload once with `repl` and iterating in the agent's own context cost $0.106 and 83 s. That three-fold difference is the closed loops' overhead, not the payload being read twice: a second call here does read less when the question is narrower, and still costs several times what the same question costs in a live session.
 
 Bounded on five axes, all reported: candidates, iterations, sub-calls, characters sent to sub-models, and total wall-clock time (30 minutes).

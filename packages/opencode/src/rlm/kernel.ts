@@ -179,6 +179,17 @@ globalThis.ask_about = (index, question) => {
 // unauthorized name fails at the host with the real permission pipeline behind it.
 // Symbol keys are excluded so awaiting the proxy or spreading it cannot be
 // mistaken for a tool call.
+// The context global as a LAZY join of the parts. Setting both meant the guest
+// held the payload twice -- measured at +92 MB of process RSS for a 4.5 MB payload
+// -- and a trajectory that only slices context_parts never paid for the copy.
+Object.defineProperty(globalThis, "context", {
+  configurable: true,
+  get() {
+    if (!Array.isArray(globalThis.context_parts)) throw new Error("no payload is loaded: call load first");
+    if (globalThis.__joined === undefined) globalThis.__joined = context_parts.join("\\n\\n");
+    return globalThis.__joined;
+  },
+});
 globalThis.tools = new Proxy({}, {
   get: (_target, name) =>
     typeof name === "symbol"

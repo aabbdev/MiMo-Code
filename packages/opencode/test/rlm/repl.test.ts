@@ -26,21 +26,33 @@ describe("repl sub-call budget", () => {
     expect(() => charge(newSpend(5, 100), 1, 200)).toThrow(/load the payload again to reset/)
   })
 
+  test("a VOLUME-only charge leaves the call allowance intact", () => {
+    // The screening fix rests on this: batches are charged by volume so the harness
+    // stops eating the trajectory's own question allowance.
+    const spent = charge(newSpend(2, 1000), 0, 400)
+    expect(spent.subcalls).toBe(0)
+    expect(spent.chars).toBe(400)
+    // …and the volume bound still bites, so it is not a way around the budget.
+    expect(() => charge(spent, 0, 700)).toThrow(/volume budget/)
+  })
+
   test("a fresh load resets both counters", () => {
     expect(newSpend(7, 500)).toMatchObject({ subcalls: 0, chars: 0, maxSubcalls: 7, maxSubcallChars: 500 })
   })
 })
 
 describe("injectPayload", () => {
-  test("exposes exactly the three globals the guidance teaches", () => {
+  test("exposes the parts, and NOT a second copy of the payload", () => {
     const seen: Record<string, unknown> = {}
     injectPayload(
       { set: (name: string, value: unknown) => void (seen[name] = value) },
       { text: "WHOLE", type: "2-file directory", files: 2, partNames: ["a.cpp", "b.cpp"], partTexts: ["A", "B"] },
     )
-    expect(Object.keys(seen).sort()).toEqual(["context", "context_part_names", "context_parts"])
-    expect(seen.context).toBe("WHOLE")
+    // `context` is a lazy getter over the parts in the kernel prelude. Injecting it
+    // as well meant the guest held a 4.5 MB payload twice: +92 MB of process RSS.
+    expect(Object.keys(seen).sort()).toEqual(["__joined", "context_part_names", "context_parts"])
     expect(seen.context_parts).toEqual(["A", "B"])
     expect(seen.context_part_names).toEqual(["a.cpp", "b.cpp"])
+    expect(seen.context).toBeUndefined()
   })
 })

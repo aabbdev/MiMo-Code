@@ -48,6 +48,21 @@ Reply with the bracketed numbers only, space-separated, and nothing else. If not
 /** How many previews go into one screening call. */
 const SCREEN_BATCH = 60
 
+/** Preview characters shown per part. Longer previews sharpen the judgement and
+ * cost proportionally more to send; 400 was arbitrary and is now a named
+ * constant so it can be varied against measured precision. */
+export const SCREEN_PREVIEW_CHARS = 400
+
+/**
+ * Ceiling on screening batches per run.
+ *
+ * Screening is HARNESS overhead: 8 batches on a 462-part payload, per `screen()`
+ * call, and a measured run spent 16 of its 21 model calls there. Charging those
+ * against the trajectory's own sub-call allowance starved the questions it wanted
+ * to ask, so they are charged by VOLUME only and bounded here instead.
+ */
+export const SCREEN_BATCH_CEILING = 40
+
 /**
  * Which parts are worth reading, judged from previews alone.
  *

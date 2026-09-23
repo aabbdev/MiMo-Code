@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { acquire, autoReturn, declareGlobals, disposeSession } from "../../src/rlm/kernel"
+import { injectPayload } from "../../src/rlm/payload"
 
 const noop = async () => ""
 
@@ -73,7 +74,15 @@ describe("persistent kernel", () => {
     const id = "ses-rlm-payload"
     const kernel = await acquire(id)
     try {
-      kernel.set("context", "alpha\nbeta\ngamma")
+      // Through the real path: `context` is now a lazy join of the parts, so setting
+      // it directly is a no-op by design.
+      injectPayload(kernel, {
+        text: "alpha\nbeta\ngamma",
+        type: "text block",
+        files: 1,
+        partNames: ["t"],
+        partTexts: ["alpha\nbeta\ngamma"],
+      })
       const step = await kernel.run("globalThis.lines = context.split('\\n'); lines.length", {
         llmQuery: noop,
         llmQueryBatched: noop,
@@ -168,6 +177,28 @@ describe("persistent kernel", () => {
       expect(calls.map(([name]) => name)).toEqual(["read", "grep"])
       expect(calls[0]![1]).toEqual({ file_path: "src/x.cpp" })
       expect(step.logs).toEqual(["ran:read ran:grep"])
+    } finally {
+      disposeSession(id)
+    }
+  })
+
+  test("context is a lazy join of the parts, and says so when nothing is loaded", async () => {
+    const id = "ses-kernel-lazy-context"
+    const kernel = await acquire(id)
+    try {
+      const empty = await kernel.run("try { return context.length } catch (e) { return e.message }", {
+        llmQuery: noop,
+        llmQueryBatched: noop,
+      })
+      expect(String(empty.value)).toContain("no payload is loaded")
+
+      injectPayload(kernel, { text: "a\n\nb", type: "text block", files: 1, partNames: ["p"], partTexts: ["a\n\nb"] })
+      const joined = await kernel.run("context", { llmQuery: noop, llmQueryBatched: noop })
+      expect(joined.value).toBe("a\n\nb")
+      // Joined once and kept: the point of the getter is that a trajectory which
+      // never touches `context` never pays for the copy.
+      const again = await kernel.run("context === globalThis.__joined", { llmQuery: noop, llmQueryBatched: noop })
+      expect(again.value).toBe(true)
     } finally {
       disposeSession(id)
     }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import type { ModelMessage } from "ai"
 import { acquire, disposeSession } from "../../src/rlm/kernel"
+import { injectPayload } from "../../src/rlm/payload"
 import { codeBlocks, confidenceReportsOf, outsideCode, parseFinal, runLoop, verdictOf } from "../../src/rlm/loop"
 
 /** A root model that replays a fixed script and records every history it saw,
@@ -175,7 +176,9 @@ describe("runLoop", () => {
   test("a two-iteration run answers, and the payload never reaches the root history", async () => {
     const payload = "SECRET-PAYLOAD-MARKER " + "filler ".repeat(500)
     await withKernel("ses-loop-basic", async (kernel) => {
-      kernel.set("context", payload)
+      // Through the real injection path: `context` is a lazy getter over the parts
+      // now, so setting it directly would be a no-op.
+      injectPayload(kernel, { text: payload, type: "text block", files: 1, partNames: ["payload"], partTexts: [payload] })
       const model = scripted([
         "```repl\nglobalThis.n = context.split(' ').length; console.log('words', n)\n```",
         "FINAL(it has " + "many" + " words)",

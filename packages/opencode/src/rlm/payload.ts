@@ -181,11 +181,16 @@ export async function loadPayload(input: { path?: string; paths?: string[]; text
 
 /** Inject a loaded payload into a realm as the three globals the prompt teaches. */
 export function injectPayload(kernel: { set: (name: string, value: unknown) => void }, payload: Payload): void {
-  kernel.set("context", payload.text)
+  // ONLY the parts. `context` is a lazy getter over them in the kernel prelude, so
+  // the guest no longer holds the payload twice -- measured at +92 MB of process
+  // RSS for a 4.5 MB payload, and a trajectory that slices `context_parts` alone
+  // never pays for the joined copy.
+  //
   // The unit of work, exposed as data rather than described in prose: a measured
   // run enumerated every file correctly but had nothing to fan out over, so it
   // answered from filenames. A part is a file, or a line-aligned slice of a large
   // one, and a sub-call takes a batch of them.
   kernel.set("context_parts", payload.partTexts)
   kernel.set("context_part_names", payload.partNames)
+  kernel.set("__joined", undefined)
 }
