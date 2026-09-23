@@ -27,7 +27,7 @@ import { ModelID, ProviderID } from "../provider/schema"
 import { Agent } from "../agent/agent"
 import { EffectBridge } from "@/effect"
 import { acquire, disposeSession } from "../rlm/kernel"
-import { makeScreener, makeSubCallerFactory } from "../rlm/host"
+import { makeScreener, makeSubCallerFactory, SCREEN_BATCH_CEILING } from "../rlm/host"
 import { injectPayload, loadPayload } from "../rlm/payload"
 import { TOOL_SCRIPT_ALIASES, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
 import type { HarnessMode } from "./gpt"
@@ -239,8 +239,18 @@ export const ReplTool = Tool.define(
 
           // The cheap first pass: one call over previews instead of paying to read
           // the payload. It spends from the same budget as any other sub-call.
+          let screenBatchCount = 0
           const screen = makeScreener(completeSub, (chars) => {
-            spend = charge(spend, 1, chars)
+            screenBatchCount += 1
+            if (screenBatchCount > SCREEN_BATCH_CEILING) {
+              throw new Error(
+                `screening budget exhausted (${SCREEN_BATCH_CEILING} preview batches per payload). Read the parts you already know about, or ask a narrower question.`,
+              )
+            }
+            // VOLUME only: screening is harness overhead, not one of the questions
+            // the trajectory chose to ask, and charging it against that allowance
+            // starved them.
+            spend = charge(spend, 0, chars)
             spends.set(ctx.sessionID, spend)
           })
 

@@ -17,7 +17,7 @@ import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { EffectBridge } from "@/effect"
 import { acquire, disposeSession } from "../rlm/kernel"
-import { makeScreener, makeSubCallerFactory, type SubUsage } from "../rlm/host"
+import { makeScreener, makeSubCallerFactory, SCREEN_BATCH_CEILING, type SubUsage } from "../rlm/host"
 import { chunkText, injectPayload, loadPayload, type Payload } from "../rlm/payload"
 import { runLoop, type Budget, type LoopResult } from "../rlm/loop"
 import { ALL_SIGNALS, claimsOf, select, type Signals } from "../rlm/search"
@@ -369,7 +369,16 @@ export const RlmTool = Tool.define(
             const screener = makeScreener(completeSub, (chars) => {
               screenBatches.calls += 1
               screenBatches.chars += chars
-              budget.charge(1, chars)
+              if (screenBatches.calls > SCREEN_BATCH_CEILING) {
+                throw new Error(
+                  `screening budget exhausted (${SCREEN_BATCH_CEILING} preview batches per run). Read the parts you already know about, or ask a narrower question.`,
+                )
+              }
+              // VOLUME only, never the call count. A measured run spent 16 of its 21
+              // model calls in screening batches, i.e. the harness was eating the
+              // trajectory's own question allowance; screening is bounded separately
+              // above instead.
+              budget.charge(0, chars)
             })
             const screened: string[] = []
             let screenCalls = 0
