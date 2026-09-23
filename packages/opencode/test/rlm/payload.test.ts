@@ -3,7 +3,7 @@ import path from "path"
 import fs from "node:fs/promises"
 import { Instance } from "../../src/project/instance"
 import { readDirectory, resolveInside } from "../../src/rlm/payload"
-import { hitRate, tallyCost } from "../../src/tool/rlm"
+import { hitRate, tallyCost } from "../../src/rlm/usage"
 import { tmpdir } from "../fixture/fixture"
 
 /** Together's published prices for the model these runs used. */

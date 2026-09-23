@@ -2632,6 +2632,15 @@ export type Config = {
           [key: string]: number | string
         }
   }
+  /**
+   * Main-session loop behaviour.
+   */
+  session?: {
+    /**
+     * How many times an unmet `/goal` may re-enter the main loop within one user turn before the goal is abandoned. Bounds a never-satisfiable condition; a fresh user turn starts a new budget. Default: 12.
+     */
+    maxGoalReact?: number
+  }
   checkpoint?: {
     /**
      * Context fill thresholds that trigger checkpoint writes. Strings may be percentages ("40%"), absolute tokens ("100K", "1.5M"), or mixed ("100K", "50%"). Each threshold must be <= window - 20K reserved. Default: ["40%", "60%", "80%"].

@@ -28,6 +28,7 @@ import { Agent } from "../agent/agent"
 import { EffectBridge } from "@/effect"
 import { acquire, disposeSession } from "../rlm/kernel"
 import { makeScreener, makeSubCallerFactory, SCREEN_BATCH_CEILING } from "../rlm/host"
+import { overheadEntries, type OverheadEntry } from "./overhead"
 import { injectPayload, loadPayload } from "../rlm/payload"
 import { TOOL_SCRIPT_ALIASES, TOOL_SCRIPT_EXCLUDED, toolScriptRegistry } from "./tool-script-ref"
 import type { HarnessMode } from "./gpt"
@@ -126,6 +127,10 @@ type ReplMetadata = {
   subcallsLeft?: number
   charsLeft?: number
   subModel?: string
+  /** What this call's sub-calls cost, in the form `SessionProcessor` adds to the
+   * session's own total. Only the sub-calls: in session mode the root turns ARE
+   * the agent's own messages, so charging them here would count them twice. */
+  overhead?: OverheadEntry[]
 }
 
 function replMetadata(over: Partial<ReplMetadata>): ReplMetadata {
@@ -179,9 +184,14 @@ export const ReplTool = Tool.define(
       ) =>
         Effect.gen(function* () {
           const realmID = `${ctx.sessionID}@repl`
+          // Every return below a step that ran carries what the sub-calls cost,
+          // including a refusal after it: the provider billed those tokens whether
+          // or not the step succeeded, and a spend that vanishes on the failure
+          // path is the same defect this accounting exists to remove.
+          let sideCost: OverheadEntry[] = []
           const reply = (output: string, over: Partial<ReplMetadata> = {}) => ({
             title: "repl",
-            metadata: replMetadata(over),
+            metadata: replMetadata({ ...(sideCost.length > 0 ? { overhead: sideCost } : {}), ...over }),
             output,
           })
           const refuse = (message: string) => reply(`repl could not run: ${message}`, { error: message })
@@ -201,7 +211,7 @@ export const ReplTool = Tool.define(
           const bridge = yield* EffectBridge.make()
           // Shared wiring, not a second copy of it: the sub-model resolution, the
           // replacing system prompt and the no-tools stream live in rlm/host.ts.
-          const { completeSub, subModel } = yield* Effect.promise(() =>
+          const caller = yield* Effect.promise(() =>
             subCaller.build({
               sessionID: ctx.sessionID,
               agent,
@@ -210,6 +220,7 @@ export const ReplTool = Tool.define(
               override: params.model,
             }),
           )
+          const { completeSub, subModel } = caller
 
           let spend = spends.get(ctx.sessionID) ?? newSpend(MAX_SUBCALLS_DEFAULT, SUBCALL_CHARS_DEFAULT)
           const host = {
@@ -396,6 +407,9 @@ export const ReplTool = Tool.define(
                 }),
               catch: (err) => new Error(err instanceof Error ? err.message : String(err)),
             }).pipe(Effect.result)
+            // Taken BEFORE the failure check, so a step that spent and then failed
+            // still reports the spend in its refusal.
+            sideCost = overheadEntries([caller.overhead()])
             if (step._tag === "Failure") return refuse(step.failure.message)
             sections.push(renderStep(step.success).rendered)
             if (nestedTrace.length > 0) sections.push("<tools>", nestedTrace.join("\n"), "</tools>")

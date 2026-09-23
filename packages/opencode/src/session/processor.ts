@@ -23,6 +23,7 @@ import { Question } from "@/question"
 import { errorMessage } from "@/util/error"
 import { isRecoverableError } from "@/tool/recoverable"
 import { getToolResultAttachments, getToolResultMetadata } from "@/tool/result-error"
+import { overheadOf } from "@/tool/overhead"
 import { Log } from "@/util"
 import { isRecord } from "@/util/record"
 import { createTextNgramMonitor, type TextNgramMonitor } from "./prompt/text-ngram-detection"
@@ -370,6 +371,40 @@ export const layer: Layer.Layer<
         })
         yield* detectTryBest(part)
         yield* settleToolCall(toolCallID)
+
+        // Spend a tool incurred on its own account — `rlm`'s and `repl`'s
+        // sub-calls are model calls the session's own usage never sees. Added to
+        // the CALLING message's cost so every readout built on message cost
+        // (the whole-session aggregate, its route, the sidebar's deltas, ACP)
+        // picks it up without knowing this exists. Measured before this: a session
+        // that spent $0.6601 was reported as $0.0151.
+        //
+        // Same rule as the ensemble overhead below: to `cost` and to the per-model
+        // metrics, NEVER to `tokens` — those must stay the request's real context
+        // footprint or overflow estimation drifts.
+        const overhead = overheadOf(result?.metadata)
+        if (overhead.length > 0) {
+          ctx.assistantMessage.cost += overhead.reduce((sum, entry) => sum + entry.cost, 0)
+          yield* session.updateMessage(ctx.assistantMessage)
+          for (const entry of overhead) {
+            if (ctx.agentMetrics) {
+              ctx.agentMetrics.tokens_in += entry.tokensIn
+              ctx.agentMetrics.tokens_out += entry.tokensOut
+            }
+            yield* bus
+              .publish(Metrics.ModelCall, {
+                sessionID: ctx.sessionID,
+                finish_reason: "tool-overhead",
+                latency_ms: 0,
+                cached_read_tokens: entry.cacheRead,
+                model_id: entry.model,
+                provider: entry.provider,
+                total_tokens_in: entry.tokensIn,
+                total_tokens_out: entry.tokensOut,
+              })
+              .pipe(Effect.ignore)
+          }
+        }
       })
 
       const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {

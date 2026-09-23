@@ -929,6 +929,12 @@ export const layer: Layer.Layer<Service, never, Bus.Service | Storage.Service | 
     /**
      * Cumulative cost of a session's assistant messages.
      *
+     * Includes the spend of tools that talk to a model on their own account
+     * (`rlm`, `repl`): `SessionProcessor` adds their reported `overhead` to the
+     * calling message's `cost`, so this one sum covers both. Before that, a session
+     * that spent $0.6601 was reported as $0.0151 — the sub-calls were attached to
+     * no message and every readout built on message cost omitted them.
+     *
      * Cost lives inside the message JSON, so this scans the session's rows (the
      * `session_id` prefix of `message_session_time_created_id_idx` bounds it)
      * rather than reading an indexed column. Measured: ~115 ms on a 12k-message

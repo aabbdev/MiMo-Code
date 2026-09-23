@@ -16,6 +16,8 @@ import { ModelID, ProviderID } from "../provider/schema"
 import { LLM } from "../session/llm"
 import { MessageV2 } from "../session/message-v2"
 import { EffectBridge } from "@/effect"
+import { priceOf, sumTallies, tallyCost, zeroTally, type UsageTally } from "./usage"
+import type { OverheadEntry } from "../tool/overhead"
 
 /** A sub-model answers about the text it is given and nothing else. Short by
  * design: a long system prompt is repeated on every call and, unlike the
@@ -23,7 +25,9 @@ import { EffectBridge } from "@/effect"
 export const SUB_SYSTEM =
   "You answer a question about the text you are given. Answer only from that evidence, keep every identifier, path and number verbatim, and be concise. If the evidence does not answer the question, say so."
 
-export type SubUsage = { input: number; output: number; cacheRead: number }
+/** What one sub-call billed for. Same shape as every other tally — this is the
+ * `UsageTally` of a single call, not a second kind of accounting. */
+export type SubUsage = UsageTally
 
 /**
  * The screening prompt for a cheap first pass.
@@ -99,6 +103,16 @@ export const makeScreener =
 export type SubCaller = {
   completeSub: (messages: ModelMessage[]) => Promise<string>
   subModel: Provider.Model
+  /**
+   * What every sub-call through this caller has cost, priced from the sub-model's
+   * own rates.
+   *
+   * Per CALLER, and both consumers build one per tool call — so this is a delta,
+   * not a running total, and reporting it cannot double-count a session. It is
+   * what a tool publishes as `overhead`, which is how a spend the provider bills
+   * but no request's usage contains reaches the session total.
+   */
+  overhead: () => OverheadEntry
 }
 
 /**
@@ -145,6 +159,10 @@ export const makeSubCallerFactory = Effect.fn("Rlm.subCallerFactory")(function* 
     )
     const subModel = overrideModel ?? configured ?? root
 
+    /** Every sub-call this caller made, so the spend it incurred is reportable
+     * without either consumer tallying it again. */
+    let spent = zeroTally()
+
     const completeSub = (messages: ModelMessage[]) => {
       const index = callIndex++
       const used: SubUsage = { input: 0, output: 0, cacheRead: 0 }
@@ -166,6 +184,16 @@ export const makeSubCallerFactory = Effect.fn("Rlm.subCallerFactory")(function* 
             agentID: input.actorID,
             quietRetryDiagnostics: true,
           })
+          // Tallied in a finalizer, and HERE rather than in each consumer. A
+          // sub-call that failed or was interrupted mid-stream still billed what it
+          // streamed, so the tally cannot be gated on success; and a nested
+          // `rlm_query` and a screening batch reach the model through this same
+          // function, so a consumer wiring its own total would miss exactly the
+          // calls it did not write.
+          const tally = Effect.sync(() => {
+            input.onUsage?.(used, index)
+            spent = sumTallies(spent, used)
+          })
           yield* Stream.runForEach(stream, (event: LLM.Event) => {
             if (event.type === "text-delta") text += event.text
             else if (event.type === "finish-step") {
@@ -174,14 +202,24 @@ export const makeSubCallerFactory = Effect.fn("Rlm.subCallerFactory")(function* 
               used.cacheRead += event.usage.inputTokenDetails?.cacheReadTokens ?? 0
             } else if (event.type === "error") return Effect.fail(event.error)
             return Effect.void
-          })
-          input.onUsage?.(used, index)
+          }).pipe(Effect.ensuring(tally))
           return text
         }),
       )
     }
 
-    return { completeSub, subModel }
+    return {
+      completeSub,
+      subModel,
+      overhead: () => ({
+        cost: tallyCost(spent, priceOf(subModel)),
+        tokensIn: spent.input,
+        tokensOut: spent.output,
+        cacheRead: spent.cacheRead,
+        provider: subModel.providerID,
+        model: subModel.id,
+      }),
+    }
   }
 
   return { build }

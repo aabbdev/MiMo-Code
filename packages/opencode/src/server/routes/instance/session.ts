@@ -299,7 +299,7 @@ export const SessionRoutes = lazy(() =>
       describeRoute({
         summary: "Get cumulative session cost",
         description:
-          "Total cost of every assistant message in the session, summed over the whole session rather than over a page of messages. Callers that display a live value should seed from this once and then add the per-message deltas.",
+          "Total cost of every assistant message in the session, summed over the whole session rather than over a page of messages. Includes the spend of tools that call a model on their own account (rlm, repl), which the processor adds to the calling message. Callers that display a live value should seed from this once and then add the per-message deltas.",
         operationId: "session.cost",
         responses: {
           200: {

@@ -18,6 +18,8 @@ import { Agent } from "../agent/agent"
 import { EffectBridge } from "@/effect"
 import { acquire, disposeSession } from "../rlm/kernel"
 import { makeScreener, makeSubCallerFactory, SCREEN_BATCH_CEILING, type SubUsage } from "../rlm/host"
+import { hitRate, priceOf, sumTallies, tallyCost, zeroTally, type UsageTally } from "../rlm/usage"
+import { overheadEntries, type OverheadEntry } from "./overhead"
 import { chunkText, injectPayload, loadPayload, type Payload } from "../rlm/payload"
 import { runLoop, type Budget, type LoopResult } from "../rlm/loop"
 import { ALL_SIGNALS, claimsOf, select, type Signals } from "../rlm/search"
@@ -52,29 +54,6 @@ const GROUNDING_FLOOR_PCT = 5
 const SUB_SYSTEM =
   "You answer a question about the text you are given. Answer only from that evidence, keep every identifier, path and number verbatim, and be concise. If the evidence does not answer the question, say so."
 
-/** Token counts for one role in the loop, with the cache split the provider
- * reports. The split is not a detail: on Together a cached input token costs
- * $0.006/M against $0.30/M uncached, so a cost reported without it is wrong by
- * up to 50×. */
-export type UsageTally = { input: number; output: number; cacheRead: number }
-
-export type Price = { input: number; output: number; cacheRead: number }
-
-/** Cached tokens bill at the cache rate, the remainder at the input rate. */
-export function tallyCost(tally: UsageTally, price: Price): number {
-  const billable = Math.max(0, tally.input - tally.cacheRead)
-  return (billable * price.input + tally.cacheRead * price.cacheRead + tally.output * price.output) / 1_000_000
-}
-
-/** Share of input tokens served from the provider's prefix cache. */
-export function hitRate(tally: UsageTally): number {
-  return tally.input > 0 ? tally.cacheRead / tally.input : 0
-}
-
-function sumTallies(a: UsageTally, b: UsageTally): UsageTally {
-  return { input: a.input + b.input, output: a.output + b.output, cacheRead: a.cacheRead + b.cacheRead }
-}
-
 /**
  * One metadata shape for every outcome. `Tool.define` infers the metadata type
  * from the returned object, so an error return carrying a different key set
@@ -98,6 +77,11 @@ type RlmMetadata = {
    * hit; the root history is append-only and is where caching has to work. */
   cachedPct: number
   costUsd: number
+  /** The same dollars, in the form `SessionProcessor` adds to the session's own
+   * total — a spend no request's usage contains, so without this the run is
+   * invisible to every cost readout. One entry per model, because the root turns
+   * and the sub-calls run on different ones. */
+  overhead: OverheadEntry[]
   rootTokensIn: number
   subTokensIn: number
   candidates: number
@@ -112,6 +96,9 @@ type RlmMetadata = {
   selectionBasis: string
   stopped?: string
   subModel?: string
+  /** Whole nested RLMs the trajectories spawned via `rlm_query`. Zero at the
+   * default depth; zero at depth 2 means the capability went unused. */
+  nestedCalls: number
 }
 
 function rlmMetadata(over: Partial<RlmMetadata>): RlmMetadata {
@@ -126,6 +113,7 @@ function rlmMetadata(over: Partial<RlmMetadata>): RlmMetadata {
     parts: 0,
     cachedPct: 0,
     costUsd: 0,
+    overhead: [],
     rootTokensIn: 0,
     subTokensIn: 0,
     candidates: 0,
@@ -134,6 +122,7 @@ function rlmMetadata(over: Partial<RlmMetadata>): RlmMetadata {
     consistencyBasis: "",
     escalated: false,
     selectionBasis: "",
+    nestedCalls: 0,
     ...over,
   }
 }
@@ -265,14 +254,17 @@ export const RlmTool = Tool.define(
           // The payload's own identifiers, extracted once, so each candidate's
           // grounding is a set membership rather than a scan of 5 MB per claim.
           const known = claimsOf(loaded.success.text)
+          const realmID = (index: number) => `${ctx.sessionID}#c${index}`
+          const maxDepth = params.depth ?? DEPTH_DEFAULT
           const system = systemPrompt({
             type: loaded.success.type,
             length: loaded.success.text.length,
             prefix: loaded.success.text.slice(0, PREFIX_CHARS),
             partCount,
+            // Offered only where it is reachable: telling a depth-1 run that
+            // `rlm_query` exists would advertise a call it cannot make.
+            recursion: maxDepth > 1,
           })
-          const realmID = (index: number) => `${ctx.sessionID}#c${index}`
-          const maxDepth = params.depth ?? DEPTH_DEFAULT
           const maxSubcalls = params.max_subcalls ?? MAX_SUBCALLS_DEFAULT
           const maxSubcallChars = params.max_subcall_chars ?? SUBCALL_CHARS_DEFAULT
           let chargedCalls = 0
@@ -299,7 +291,6 @@ export const RlmTool = Tool.define(
           // Every candidate resolves the same sub-model, so the first build's
           // answer is the run's answer; the tally stays per candidate.
           let subModelRef: typeof rootModel.success | undefined
-          const zero = (): UsageTally => ({ input: 0, output: 0, cacheRead: 0 })
           // Per-sub-call usage, so cache REUSE is measurable: a global ratio cannot
           // say whether a repeat question about the same part was served from the
           // provider's cache, which is the only cache lever this design has.
@@ -311,11 +302,6 @@ export const RlmTool = Tool.define(
             confidence: params.signals.includes("confidence"),
             length: params.signals.includes("length"),
           }
-          const priceOf = (model: typeof rootModel.success) => ({
-            input: model.cost.input,
-            output: model.cost.output,
-            cacheRead: model.cost.cache.read,
-          })
 
           type Trajectory = {
             index: number
@@ -329,6 +315,10 @@ export const RlmTool = Tool.define(
              * it finds the relevant parts: an unmeasured screen is an assumption. */
             screened: string[]
             screenCalls: number
+            /** `rlm_query` calls this trajectory made. A nested loop's model calls
+             * land in `tally.root`, so the tally alone cannot say whether the
+             * recursion was chosen or merely available. */
+            nestedCalls: number
             error?: string
           }
 
@@ -342,7 +332,7 @@ export const RlmTool = Tool.define(
            * entirely on having K of them.
            */
           const runOne = async (index: number): Promise<Trajectory> => {
-            const tally = { root: zero(), sub: zero() }
+            const tally = { root: zeroTally(), sub: zeroTally() }
             // Root turns stay here — the loop owns that prompt — while sub-calls come
             // from the shared factory, which also tallies them.
             const { completeSub, subModel } = await subCaller.build({
@@ -450,6 +440,7 @@ export const RlmTool = Tool.define(
                       length: text.length,
                       prefix: text.slice(0, PREFIX_CHARS),
                       partCount: chunks.length,
+                      recursion: level < maxDepth,
                     }),
                   ]),
                   completeSub,
@@ -485,7 +476,7 @@ export const RlmTool = Tool.define(
               // A cancelled turn must not be reported as a failed one.
               interrupt: () => ctx.abort.aborted,
             })
-            return { index, result, tally, screened, screenCalls, screenBatches }
+            return { index, result, tally, screened, screenCalls, screenBatches, nestedCalls: nestedSeq }
           }
 
           /**
@@ -515,9 +506,10 @@ export const RlmTool = Tool.define(
                     runOne(index).catch(
                       (err): Trajectory => ({
                         index,
-                        tally: { root: zero(), sub: zero() },
+                        tally: { root: zeroTally(), sub: zeroTally() },
                         screened: [],
                         screenCalls: 0,
+                        nestedCalls: 0,
                         screenBatches: { calls: 0, chars: 0 },
                         error: err instanceof Error ? err.message : String(err),
                       }),
@@ -560,8 +552,8 @@ export const RlmTool = Tool.define(
           const winner = picked.chosen >= 0 ? trajectories[picked.chosen] : undefined
           const result = winner?.result
 
-          const rootTotals = trajectories.reduce((sum, trajectory) => sumTallies(sum, trajectory.tally.root), zero())
-          const subTotals = trajectories.reduce((sum, trajectory) => sumTallies(sum, trajectory.tally.sub), zero())
+          const rootTotals = trajectories.reduce((sum, trajectory) => sumTallies(sum, trajectory.tally.root), zeroTally())
+          const subTotals = trajectories.reduce((sum, trajectory) => sumTallies(sum, trajectory.tally.sub), zeroTally())
           const totals = sumTallies(rootTotals, subTotals)
           // The bill is for all K trajectories, not just the one that won — the
           // search is what was paid for.
@@ -585,6 +577,10 @@ export const RlmTool = Tool.define(
           const screenCalls = trajectories.reduce((sum, trajectory) => sum + trajectory.screenCalls, 0)
           const screenModelCalls = trajectories.reduce((sum, trajectory) => sum + trajectory.screenBatches.calls, 0)
           const screenModelChars = trajectories.reduce((sum, trajectory) => sum + trajectory.screenBatches.chars, 0)
+          // Reported because without it a run at depth 2 cannot say whether the
+          // recursion it was granted was ever chosen — the shared budget alone
+          // cannot separate a nested RLM's calls from the trajectory's own.
+          const nestedCalls = trajectories.reduce((sum, trajectory) => sum + trajectory.nestedCalls, 0)
           const screening =
             screenCalls === 0
               ? ""
@@ -630,6 +626,7 @@ export const RlmTool = Tool.define(
             `root_cached_pct="${rootCachedPct.toFixed(1)}"`,
             `sub_cached_pct="${(hitRate(subTotals) * 100).toFixed(1)}"`,
             `screen_calls="${screenModelCalls}"`,
+            `nested_calls="${nestedCalls}"`,
             `model_calls="${subCallUsage.length}"`,
             `model_calls_cached="${subCallUsage.filter((usage) => usage.cacheRead > 0).length}/${subCallUsage.length}"`,
             `signals="${params.signals?.join(",") ?? "all"}"`,
@@ -689,6 +686,24 @@ export const RlmTool = Tool.define(
               parts: partCount,
               cachedPct: Number(cachedPct.toFixed(1)),
               costUsd: Number(costUsd.toFixed(4)),
+              overhead: overheadEntries([
+                {
+                  cost: tallyCost(rootTotals, priceOf(rootModel.success)),
+                  tokensIn: rootTotals.input,
+                  tokensOut: rootTotals.output,
+                  cacheRead: rootTotals.cacheRead,
+                  provider: String(rootModel.success.providerID),
+                  model: String(rootModel.success.id),
+                },
+                {
+                  cost: tallyCost(subTotals, priceOf(pricedSub)),
+                  tokensIn: subTotals.input,
+                  tokensOut: subTotals.output,
+                  cacheRead: subTotals.cacheRead,
+                  provider: String(pricedSub.providerID),
+                  model: String(pricedSub.id),
+                },
+              ]),
               rootTokensIn: rootTotals.input,
               subTokensIn: subTotals.input,
               candidates: trajectories.length,
@@ -697,6 +712,7 @@ export const RlmTool = Tool.define(
               consistencyBasis: picked.consistencyBasis,
               escalated,
               escalationReason: escalation,
+              nestedCalls,
               degraded: picked.degraded,
               selectionBasis: picked.basis,
               stopped: result?.stopped,

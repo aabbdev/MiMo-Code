@@ -3,6 +3,7 @@ import type { ModelMessage } from "ai"
 import { acquire, disposeSession } from "../../src/rlm/kernel"
 import { injectPayload } from "../../src/rlm/payload"
 import { codeBlocks, confidenceReportsOf, outsideCode, parseFinal, runLoop, verdictOf } from "../../src/rlm/loop"
+import { systemPrompt } from "../../src/rlm/prompt"
 
 /** A root model that replays a fixed script and records every history it saw,
  * so a test can assert on the history itself and not only on the answer. */
@@ -453,5 +454,23 @@ describe("runLoop", () => {
       expect(result.answer).toBe("done")
       expect(String(model.seen[1]![2]!.content)).toContain("No code block was found")
     })
+  })
+})
+
+describe("the recursion is offered only where it is reachable", () => {
+  // Measured: `rlm_query` was wired, defined in the guest, and NEVER called — the
+  // prompt never named it. A capability the prompt does not mention is one the
+  // model cannot choose, so depth 2 would have been an untestable claim.
+  const meta = { type: "directory", length: 10, prefix: "x", partCount: 1 }
+
+  test("depth 2 says rlm_query exists, and says what it costs", () => {
+    const text = systemPrompt({ ...meta, recursion: true })
+    expect(text).toContain("rlm_query")
+    expect(text).toContain("SAME sub-call budget")
+  })
+
+  test("depth 1 does not advertise a call it would refuse", () => {
+    expect(systemPrompt({ ...meta, recursion: false })).not.toContain("rlm_query")
+    expect(systemPrompt(meta)).not.toContain("rlm_query")
   })
 })

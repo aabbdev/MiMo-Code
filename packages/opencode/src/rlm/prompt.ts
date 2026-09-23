@@ -28,6 +28,10 @@ export type ContextMeta = {
    * reason: the first decomposition attempt is what decides the run, and the
    * model cannot plan one without a unit of work. */
   partCount: number
+  /** Whether `rlm_query` is reachable at this depth. It is WIRED at depth ≥ 2 and
+   * the guest always defines it, but a capability the prompt never names is one
+   * the model cannot choose — measured: the visitor existed and was never called. */
+  recursion?: boolean
 }
 
 const EXAMPLES = `
@@ -107,6 +111,12 @@ IMPORTANT — WHERE YOUR ANSWER MAY COME FROM. What you print is returned to you
 SCREEN BEFORE YOU READ. \`screen(question)\` makes one cheap pass over short previews of every part and returns the indices worth reading. On a large payload that is a fraction of the cost of reading it, so call it FIRST and read only what it returns — reading everything to answer one question is the expensive mistake. If the screening comes back empty or wrong, screen again with a differently worded question rather than falling back to reading the whole payload.
 
 For a follow-up question about a part you have already asked about, use \`ask_about(index, question)\` instead of \`llm_query\`: it puts the part first and your question last, so the provider serves the part from its cache rather than charging for it again.
+${
+  meta.recursion
+    ? `
+RECURSION, FOR A SUB-PROBLEM THAT NEEDS ITS OWN DECOMPOSITION. \`rlm_query(text, question)\` runs a whole nested RLM over \`text\`, not one answer from one LLM: it can slice that text, sub-call it, and iterate. Reach for it when a part is too large or too tangled for a single \`llm_query\` prompt — when answering it means several questions over a sub-context. It spends the SAME sub-call budget you do, so it buys no extra allowance, and a bigger \`llm_query\` prompt is cheaper whenever one call would have answered.`
+    : ""
+}
 
 CONFIDENCE, REQUIRED EVERY STEP. End each reply with a single JSON object on its own line, reporting how confident you are in the step you are about to take:
 
