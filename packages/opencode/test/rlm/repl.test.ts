@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { injectPayload } from "../../src/rlm/payload"
-import { charge, newSpend } from "../../src/tool/repl"
+import { charge, GROUNDING_FLOOR_PCT, groundingOf, newSpend } from "../../src/tool/repl"
 
 describe("repl sub-call budget", () => {
   test("both bounds refuse, and neither implies the other", () => {
@@ -54,5 +54,50 @@ describe("injectPayload", () => {
     expect(seen.context_parts).toEqual(["A", "B"])
     expect(seen.context_part_names).toEqual(["a.cpp", "b.cpp"])
     expect(seen.context).toBeUndefined()
+  })
+})
+
+describe("repl grounding", () => {
+  // The defect this instrument exists to catch, measured on rlm before it moved
+  // here: a run that printed names and sizes, made ZERO sub-calls, had seen under
+  // 1 % of the payload, and returned a confident 10 500-character description of
+  // 119 files built from their filenames — 1 of 5 spot-checks right.
+  const loaded = () => ({ observedChars: 0, warned: false })
+
+  test("loading is not an ungrounded answer, so nothing is said before a code step", () => {
+    expect(groundingOf(loaded(), 4_000_000, 0, 0).warning).toBeUndefined()
+  })
+
+  test("a code step that printed under the floor with no sub-call is warned, once", () => {
+    const shown = { observedChars: 3000, warned: false }
+    const first = groundingOf(shown, 4_906_634, 0, 1)
+    expect(first.warning).toBeDefined()
+    expect(first.observedPct).toBeLessThan(GROUNDING_FLOOR_PCT)
+    // It names the obligation rather than reporting an alarm.
+    expect(first.warning).toContain("never its meaning")
+    expect(first.warning).toContain("llm_query")
+    // Once: a paragraph repeated every step stops being read.
+    expect(groundingOf({ ...shown, warned: true }, 4_906_634, 0, 2).warning).toBeUndefined()
+  })
+
+  test("one sub-call clears the condition entirely, whatever was printed", () => {
+    expect(groundingOf({ observedChars: 100, warned: false }, 4_906_634, 1, 3).warning).toBeUndefined()
+  })
+
+  test("crossing the floor clears it, so a real read is never nagged", () => {
+    const read = { observedChars: 300_000, warned: false }
+    expect(groundingOf(read, 4_906_634, 0, 4).observedPct).toBeGreaterThan(GROUNDING_FLOOR_PCT)
+    expect(groundingOf(read, 4_906_634, 0, 4).warning).toBeUndefined()
+  })
+
+  test("an empty payload cannot be ungrounded", () => {
+    const out = groundingOf(loaded(), 0, 0, 1)
+    expect(out.observedPct).toBe(100)
+    expect(out.warning).toBeUndefined()
+  })
+
+  test("the share is of the payload, and rides on every step", () => {
+    const half = groundingOf({ observedChars: 2_453_317, warned: true }, 4_906_634, 0, 9)
+    expect(half.observedPct).toBeCloseTo(50, 6)
   })
 })

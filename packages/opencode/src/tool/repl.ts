@@ -88,10 +88,80 @@ export function charge(state: Spend, count: number, volume: number): Spend {
   return { ...state, subcalls: state.subcalls + count, chars: state.chars + volume }
 }
 
+/**
+ * A payload's grounding state, beside its budget.
+ *
+ * `rlm` used to own this instrument and it is the one thing that had to survive
+ * its removal: the run it caught printed names and sizes, made ZERO sub-calls, had
+ * seen under 1 % of the payload, and still returned a confident 10 500-character
+ * description of 119 files built from their FILENAMES (1 of 5 spot-checks right).
+ * In a session kernel the same failure is structurally cheaper to fall into —
+ * printing a file is free and reading it is impossible — so the count has to be in
+ * front of the agent while it still matters.
+ */
+export type Grounding = { observedChars: number; warned: boolean }
+
+export function newGrounding(): Grounding {
+  return { observedChars: 0, warned: false }
+}
+
+/** Below this share of the payload ever shown, an answer that describes the
+ * payload was not grounded in it. Same floor `rlm` used, kept so the two
+ * instruments would have agreed. */
+export const GROUNDING_FLOOR_PCT = 5
+
+/**
+ * What the agent has actually had in front of it, and whether that is a problem.
+ *
+ * Pure, so the policy is testable without a kernel: `observedChars` is only what
+ * `renderStep` said it SHOWED (an echo's truncation notice is not content), and a
+ * single sub-call clears the condition entirely — delegating to a sub-LLM is the
+ * one act that makes an answer about meaning possible, whatever was printed.
+ *
+ * The warning fires ONCE per payload. It states an obligation, not an alarm, and
+ * `observed_pct` rides on every step afterwards so the number keeps saying what
+ * the paragraph would otherwise have to repeat — an instruction repeated every
+ * step becomes noise and stops being read.
+ */
+export function groundingOf(
+  state: Grounding,
+  payloadChars: number,
+  subcalls: number,
+  codeSteps: number,
+): { observedPct: number; warning?: string } {
+  const observedPct = payloadChars === 0 ? 100 : (state.observedChars / payloadChars) * 100
+  if (state.warned || subcalls > 0 || codeSteps === 0 || observedPct >= GROUNDING_FLOOR_PCT) {
+    return { observedPct }
+  }
+  return {
+    observedPct,
+    warning: [
+      "<grounding_warning>",
+      `Only ${observedPct.toFixed(1)}% of the payload has been shown to you, and no content has gone to a sub-LLM.`,
+      "What you have printed is a file's NAME, SIZE and STRUCTURE — never its meaning. Describing what this payload contains from that is an invention, and a confident invented description is worse than an admitted gap.",
+      "Route the parts that matter through `llm_query` (or `screen` first to find them) before saying anything about what they do.",
+      "</grounding_warning>",
+    ].join("\n"),
+  }
+}
+
 /** Per-session state. The kernel is keyed by session; the budget has to live
  * beside it, and it is deliberately module-level: this becomes an Effect service
  * the day a second consumer needs it, and not before. */
-const spends = new Map<string, Spend>()
+const payloads = new Map<string, { spend: Spend; grounding: Grounding; codeSteps: number; payloadChars: number }>()
+
+/**
+ * One payload's whole state, replaced wholesale by `load`.
+ *
+ * `payloadChars` lives HERE rather than in a local of `execute`: a local that only
+ * the `load` branch assigns reads as 0 on every `code`-only call, which made
+ * `observed_pct` report 100 % for a payload nothing had read. Caught by an
+ * end-to-end run, not by the unit tests — those test the policy, this was the
+ * plumbing between them.
+ */
+function freshPayloadState(spend: Spend, payloadChars = 0) {
+  return { spend, grounding: newGrounding(), codeSteps: 0, payloadChars }
+}
 
 function renderStep(step: { value?: unknown; logs: string[]; error?: string }): { rendered: string; shown: number } {
   const framing = "This is the result of YOUR previous step, not text to continue. Do not repeat it."
@@ -126,6 +196,10 @@ type ReplMetadata = {
   nestedCalls?: number
   subcallsLeft?: number
   charsLeft?: number
+  /** Share of the payload ever shown to the agent. Below
+   * `GROUNDING_FLOOR_PCT` with no sub-call, an answer about content is an
+   * invention — see `groundingOf`. */
+  observedPct?: number
   subModel?: string
   /** What this call's sub-calls cost, in the form `SessionProcessor` adds to the
    * session's own total. Only the sub-calls: in session mode the root turns ARE
@@ -198,7 +272,7 @@ export const ReplTool = Tool.define(
 
           if (params.reset) {
             disposeSession(realmID)
-            spends.delete(ctx.sessionID)
+            payloads.delete(ctx.sessionID)
             return reply("kernel dropped; the next `load` starts a fresh one", { reset: true })
           }
 
@@ -222,15 +296,18 @@ export const ReplTool = Tool.define(
           )
           const { completeSub, subModel } = caller
 
-          let spend = spends.get(ctx.sessionID) ?? newSpend(MAX_SUBCALLS_DEFAULT, SUBCALL_CHARS_DEFAULT)
+          // The budget, the grounding count and the step count belong to the SAME
+          // payload: `load` resets all three, and nothing else can.
+          let state = payloads.get(ctx.sessionID) ?? freshPayloadState(newSpend(MAX_SUBCALLS_DEFAULT, SUBCALL_CHARS_DEFAULT))
+          const spendLeft = () => state.spend.maxSubcalls - state.spend.subcalls
           const host = {
             llmQuery: async (prompt: unknown) => {
               const text = typeof prompt === "string" ? prompt : JSON.stringify(prompt)
               if (text.length > SUBCALL_CALL_CHARS) {
                 throw new Error(`prompt is ${text.length} characters, over the ${SUBCALL_CALL_CHARS}-character limit per sub-call. Split it into smaller chunks.`)
               }
-              spend = charge(spend, 1, text.length)
-              spends.set(ctx.sessionID, spend)
+              state = { ...state, spend: charge(state.spend, 1, text.length) }
+              payloads.set(ctx.sessionID, state)
               return completeSub([{ role: "user", content: text }])
             },
             llmQueryBatched: async (prompts: unknown) => {
@@ -238,8 +315,8 @@ export const ReplTool = Tool.define(
               const texts = prompts.map((prompt) => (typeof prompt === "string" ? prompt : JSON.stringify(prompt)))
               // Charge the batch up front: a batch that cannot be afforded must fail
               // before it half-runs, or the caller sees a phantom budget.
-              spend = charge(spend, texts.length, texts.reduce((sum, text) => sum + text.length, 0))
-              spends.set(ctx.sessionID, spend)
+              state = { ...state, spend: charge(state.spend, texts.length, texts.reduce((sum, text) => sum + text.length, 0)) }
+              payloads.set(ctx.sessionID, state)
               const out: string[] = []
               for (let index = 0; index < texts.length; index += 4) {
                 out.push(...(await Promise.all(texts.slice(index, index + 4).map((text) => completeSub([{ role: "user", content: text }])))))
@@ -261,8 +338,8 @@ export const ReplTool = Tool.define(
             // VOLUME only: screening is harness overhead, not one of the questions
             // the trajectory chose to ask, and charging it against that allowance
             // starved them.
-            spend = charge(spend, 0, chars)
-            spends.set(ctx.sessionID, spend)
+            state = { ...state, spend: charge(state.spend, 0, chars) }
+            payloads.set(ctx.sessionID, state)
           })
 
           const kernel = yield* Effect.tryPromise({
@@ -285,10 +362,13 @@ export const ReplTool = Tool.define(
             injectPayload(kernel.success, loaded.success)
             payloadChars = loaded.success.text.length
             parts = loaded.success.partNames.length
-            spend = newSpend(params.load.max_subcalls ?? MAX_SUBCALLS_DEFAULT, params.load.max_subcall_chars ?? SUBCALL_CHARS_DEFAULT)
-            spends.set(ctx.sessionID, spend)
+            state = freshPayloadState(
+              newSpend(params.load.max_subcalls ?? MAX_SUBCALLS_DEFAULT, params.load.max_subcall_chars ?? SUBCALL_CHARS_DEFAULT),
+              payloadChars,
+            )
+            payloads.set(ctx.sessionID, state)
             sections.push(
-              `<kernel loaded="${loaded.success.type}" chars="${payloadChars}" parts="${parts}" subcall_budget="${spend.maxSubcalls}" subcall_chars="${spend.maxSubcallChars}">`,
+              `<kernel loaded="${loaded.success.type}" chars="${payloadChars}" parts="${parts}" subcall_budget="${state.spend.maxSubcalls}" subcall_chars="${state.spend.maxSubcallChars}">`,
               `The payload is now a variable. What you print is returned TRUNCATED to a short prefix, so printing a file does not put it in front of you and does not count as reading it: code can tell you a file's name, size and structure, only llm_query can tell you what it MEANS. It begins with:`,
               loaded.success.text.slice(0, PRELUDE_PREFIX_CHARS),
               "</kernel>",
@@ -411,20 +491,34 @@ export const ReplTool = Tool.define(
             // still reports the spend in its refusal.
             sideCost = overheadEntries([caller.overhead()])
             if (step._tag === "Failure") return refuse(step.failure.message)
-            sections.push(renderStep(step.success).rendered)
+            const echo = renderStep(step.success)
+            // What the echo SHOWED, not what it rendered: the truncation notice is
+            // not content, and counting it would inflate the grounding figure.
+            state = { ...state, grounding: { ...state.grounding, observedChars: state.grounding.observedChars + echo.shown }, codeSteps: state.codeSteps + 1 }
+            payloads.set(ctx.sessionID, state)
+            sections.push(echo.rendered)
             if (nestedTrace.length > 0) sections.push("<tools>", nestedTrace.join("\n"), "</tools>")
             nestedCallCount = nestedCalls
           }
 
+          // Reported on EVERY step, warned ONCE: the number is the standing
+          // instrument, the paragraph is the obligation it exists to state.
+          const grounding = groundingOf(state.grounding, state.payloadChars, state.spend.subcalls, state.codeSteps)
+          if (grounding.warning) {
+            state = { ...state, grounding: { ...state.grounding, warned: true } }
+            payloads.set(ctx.sessionID, state)
+            sections.push(grounding.warning)
+          }
           sections.push(
-            `<budget subcalls="${spend.maxSubcalls - spend.subcalls}" chars="${spend.maxSubcallChars - spend.chars}" />`,
+            `<budget subcalls="${spendLeft()}" chars="${state.spend.maxSubcallChars - state.spend.chars}" observed_pct="${grounding.observedPct.toFixed(1)}" />`,
           )
           return reply(sections.join("\n"), {
-            payloadChars,
+            payloadChars: state.payloadChars,
             parts,
             nestedCalls: nestedCallCount,
-            subcallsLeft: spend.maxSubcalls - spend.subcalls,
-            charsLeft: spend.maxSubcallChars - spend.chars,
+            subcallsLeft: spendLeft(),
+            charsLeft: state.spend.maxSubcallChars - state.spend.chars,
+            observedPct: Number(grounding.observedPct.toFixed(1)),
             subModel: `${subModel.providerID}/${subModel.id}`,
           })
         }),
