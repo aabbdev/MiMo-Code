@@ -6,7 +6,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import z from "zod"
 import path from "path"
 import os from "os"
-import { renameSync, copyFileSync, rmSync, unlinkSync, existsSync } from "fs"
+import { renameSync, copyFileSync, rmSync, unlinkSync, existsSync, mkdirSync, chmodSync } from "fs"
 import { BusEvent } from "@/bus/bus-event"
 import { Flag } from "../flag/flag"
 import { Log } from "../util"
@@ -16,6 +16,40 @@ import { InstallationChannel, InstallationVersion } from "./version"
 const log = Log.create({ service: "installation" })
 
 const PACKAGE_NAME = "@mimo-ai/cli"
+
+/**
+ * A fork's own release channel.
+ *
+ * This binary is a build of a FORK, and the upstream sources cannot serve it: a
+ * patch release there replaces it, and the fork-only config keys (`session`,
+ * `checkpoint`) then read as "Unrecognized key", so the install stops starting.
+ * Measured, twice, by the auto-upgrade this file runs on every invocation.
+ *
+ * `MIMOCODE_UPGRADE_REPO` = `owner/name` makes BOTH the version check and the
+ * install read that repo's GitHub releases, so an upgrade installs the fork or
+ * nothing at all. Unset — the default — leaves every source exactly as it was.
+ *
+ * Note the two other gates, because this one alone does nothing: a `local`-channel
+ * build returns before the check runs at all, and `autoupdate: false` returns
+ * before the version is even fetched. `autoupdate: "notify"` is the combination
+ * that makes sense here — you get told when the fork has a release, and `mimo
+ * upgrade` is what installs it.
+ */
+export function upgradeRepo(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const raw = (env.MIMOCODE_UPGRADE_REPO ?? "")
+    .trim()
+    .replace(/^https?:\/\/github\.com\//, "")
+    .replace(/\.git$/, "")
+  return /^[\w.-]+\/[\w.-]+$/.test(raw) ? raw : undefined
+}
+
+/** The archive `bun run script/build.ts` publishes for this machine:
+ * `mimocode-<os>-<arch>.tar.gz` on linux, `.zip` elsewhere. */
+export function forkArchive(platform: string = process.platform, arch: string = process.arch): string {
+  const os = platform === "win32" ? "windows" : platform === "darwin" ? "darwin" : "linux"
+  const cpu = arch === "arm64" ? "arm64" : "x64"
+  return `mimocode-${os}-${cpu}${os === "linux" ? ".tar.gz" : ".zip"}`
+}
 
 export type Method = "curl" | "npm" | "pnpm" | "bun" | "brew" | "scoop" | "choco" | "unknown"
 
@@ -239,6 +273,27 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
       const latestImpl = Effect.fn("Installation.latest")(function* (installMethod?: Method) {
         const detectedMethod = installMethod || (yield* methodImpl())
 
+        const repo = upgradeRepo()
+        if (repo) {
+          const body = yield* text([
+            "curl",
+            "-fsSL",
+            "-H",
+            "accept: application/vnd.github+json",
+            `https://api.github.com/repos/${repo}/releases/latest`,
+          ])
+          const tag = (() => {
+            try {
+              return String((JSON.parse(body) as { tag_name?: unknown }).tag_name ?? "")
+            } catch {
+              return ""
+            }
+          })()
+          const version = tag.replace(/^v/, "")
+          if (/^\d+\.\d+\.\d+/.test(version)) return version
+          return yield* Effect.die(new Error(`no usable release tag in ${repo} (got ${JSON.stringify(tag)})`))
+        }
+
         // TODO(mimocode): uncomment when mimocode is published to homebrew
         // if (detectedMethod === "brew") {
         //   const formula = yield* getBrewFormula()
@@ -317,7 +372,67 @@ export const layer: Layer.Layer<Service, never, HttpClient.HttpClient | ChildPro
         return yield* Effect.die(new Error(`unsupported update channel: ${detectedMethod}`))
       }, Effect.orDie)
 
+      /**
+       * Install a release from the fork.
+       *
+       * The upstream install script cannot do this — it fetches a version from
+       * Xiaomi's host, where a fork's tag does not exist — so the release ASSET is
+       * downloaded and put in place here, with the two precautions this file
+       * already applies elsewhere and one it did not: the staged binary is RUN
+       * before it replaces anything (a truncated download must not become the
+       * binary that cannot start), and the swap is rename-then-create, because on
+       * Linux a running executable's file cannot be written (ETXTBSY) while
+       * renaming it away first is atomic and reversible.
+       */
+      const upgradeFromFork = Effect.fnUntraced(function* (repo: string, target: string) {
+        const exe = process.execPath
+        const archive = forkArchive()
+        const stage = path.join(os.tmpdir(), `mimocode-fork-upgrade-${process.pid}-${Date.now()}`)
+        mkdirSync(stage, { recursive: true })
+        const file = path.join(stage, archive)
+        const url = `https://github.com/${repo}/releases/download/v${target}/${archive}`
+        const download = yield* run(["curl", "-fsSL", "-o", file, url])
+        if (download.code !== 0)
+          return yield* new UpgradeFailedError({ stderr: download.stderr || `could not download ${url}` })
+        const extract = archive.endsWith(".tar.gz")
+          ? yield* run(["tar", "-xzf", file, "-C", stage])
+          : yield* run(["unzip", "-o", "-q", file, "-d", stage])
+        if (extract.code !== 0)
+          return yield* new UpgradeFailedError({ stderr: extract.stderr || `could not extract ${archive}` })
+        const staged = path.join(stage, process.platform === "win32" ? "mimo.exe" : "mimo")
+        if (!existsSync(staged))
+          return yield* new UpgradeFailedError({ stderr: `${archive} from ${repo} contains no mimocode binary` })
+        const probe = yield* run([staged, "--version"])
+        if (probe.code !== 0 || probe.stdout.trim().length === 0)
+          return yield* new UpgradeFailedError({
+            stderr: `the binary in ${archive} does not run: ${probe.stderr || probe.stdout}`,
+          })
+        const backup = `${exe}.old-${process.pid}`
+        renameSync(exe, backup)
+        try {
+          copyFileSync(staged, exe)
+          chmodSync(exe, 0o755)
+        } catch (e) {
+          renameSync(backup, exe)
+          return yield* new UpgradeFailedError({
+            stderr: `failed to install over ${exe}: ${e instanceof Error ? e.message : String(e)}`,
+          })
+        }
+        try {
+          unlinkSync(backup)
+        } catch {}
+        rmSync(stage, { recursive: true, force: true })
+      })
+
       const upgradeImpl = Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
+        const repo = upgradeRepo()
+        if (repo) {
+          yield* upgradeFromFork(repo, target)
+          log.info("upgraded", { method: "github", repo, target })
+          yield* text([process.execPath, "--version"])
+          return
+        }
+
         let result: { code: ChildProcessSpawner.ExitCode; stdout: string; stderr: string } | undefined
         switch (m) {
           case "curl":
