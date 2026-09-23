@@ -52,6 +52,53 @@ function displayToolOutput(output: unknown) {
   return JSON.stringify(output, null, 2) ?? String(output)
 }
 
+/**
+ * Characters actually sent, by kind, at the moment the request was assembled.
+ *
+ * `byTool` is the point of it: the total says the window is large, only the
+ * breakdown says WHICH tools fill it, and that is what decides what could be
+ * externalized or pruned. Approximate by design — it sizes the request, it does
+ * not re-serialize it — and the tool split counts a call and its result together
+ * because both are occupied window.
+ */
+function contextComposition(input: LLM.StreamInput) {
+  const size = (value: unknown) => (typeof value === "string" ? value.length : (JSON.stringify(value ?? "")?.length ?? 0))
+  const byTool: Record<string, number> = {}
+  let user = 0
+  let assistant = 0
+  let tool = 0
+  for (const message of input.messages) {
+    if (typeof message.content === "string") {
+      if (message.role === "user") user += message.content.length
+      else assistant += message.content.length
+      continue
+    }
+    for (const part of message.content as Array<Record<string, any>>) {
+      const chars = size(part)
+      if (part.type === "tool-result" || part.type === "tool-call") {
+        tool += chars
+        const id = String(part.toolName ?? "unknown")
+        byTool[id] = (byTool[id] ?? 0) + chars
+        continue
+      }
+      if (part.type === "text" || part.type === "reasoning") assistant += chars
+      else user += chars
+    }
+  }
+  return {
+    system: input.system.join("").length,
+    tools: size(input.tools),
+    user,
+    assistant,
+    tool,
+    byTool,
+    messages: input.messages.length,
+    // Named so a figure can be read against the tools the model actually had,
+    // not against the roster the registry holds.
+    activeTools: input.activeTools?.length ?? Object.keys(input.tools).length,
+  }
+}
+
 function jsonToolOutput(output: unknown): MessageV2.ToolStateCompleted["providerOutput"] {
   const serialized = JSON.stringify(output)
   return serialized === undefined ? null : JSON.parse(serialized)
@@ -859,6 +906,18 @@ export const layer: Layer.Layer<
 
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
         slog.info("process")
+        // Phase 0 context-composition diagnostics (temporary; same shape and same
+        // reason as `cache.usage` below). The database CANNOT answer "what
+        // occupies the window": the stored parts are a ~25x superset of what is
+        // sent, because the request is rebuilt from a checkpoint-derived prefix and
+        // `session/prune.ts` rewrites old tool outputs. An attempt to infer it from
+        // the rows produced an "88 % old tool results" figure that was pure
+        // artifact. So this measures the composition where the request is
+        // ASSEMBLED, and reads it back from the log — `--log-level DEBUG`. Gated
+        // on the level, not merely logged at it: the value costs a walk and a
+        // serialization of every message, which must not happen for a line that
+        // will be thrown away.
+        if (Log.debugEnabled()) slog.debug("context.composition", contextComposition(streamInput))
         ctx.needsOverflowHandling = false
         const cfg = yield* config.get()
         ctx.shouldBreak = cfg.experimental?.continue_loop_on_deny !== true

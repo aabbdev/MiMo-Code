@@ -46,6 +46,19 @@ function shouldLog(input: Level): boolean {
   return levelPriority[input] >= levelPriority[level]
 }
 
+/**
+ * Whether a DEBUG line would actually be written.
+ *
+ * Exposed so a diagnostic whose VALUE costs real work to assemble can skip that
+ * work when nobody will read it: `session.processor`'s context composition walks
+ * every message of the request and sizes each one, which on a 400k-token
+ * transcript is megabytes of serialization per model call for a line that is
+ * discarded at INFO.
+ */
+export function debugEnabled(): boolean {
+  return shouldLog("DEBUG")
+}
+
 export type Logger = {
   debug(message?: any, extra?: Record<string, any>): void
   info(message?: any, extra?: Record<string, any>): void
