@@ -96,7 +96,7 @@ import { formatTranscript } from "../../util/transcript"
 import { UI } from "@/cli/ui.ts"
 import { useTuiConfig } from "../../context/tui-config"
 import { getScrollAcceleration } from "../../util/scroll"
-import { nextThinkingMode, reasoningSummary, useThinkingMode, type ThinkingMode } from "../../context/thinking"
+import { nextThinkingMode, reasoningSummary, reasoningTitle, useThinkingMode, type ThinkingMode } from "../../context/thinking"
 import { TuiPluginRuntime } from "../../plugin"
 import { DialogGoUpsell } from "../../component/dialog-go-upsell"
 import { DialogTokenPlan } from "../../component/dialog-token-plan"
@@ -2145,7 +2145,13 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     const end = props.part.time.end
     return end === undefined ? 0 : Math.max(0, end - props.part.time.start)
   })
-  const summary = createMemo(() => reasoningSummary(content()))
+  // The header title, NOT the summary. Reading `summary().title` here made every
+  // reasoning delta compute `reasoningSummary` over the whole accumulated stream, so the
+  // body slice — an allocation proportional to the stream — was paid on every delta even
+  // in the default `hide` mode, where the body is never rendered. That is quadratic in
+  // one turn's reasoning, and it is the same shape as the `filetype` quadratic fixed on
+  // TextPart, in a component that was missed.
+  const title = createMemo(() => reasoningTitle(content()))
 
   const toggle = () => {
     if (!inMinimal()) return
@@ -2160,26 +2166,45 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             toggleable={inMinimal()}
             open={!inMinimal() || expanded()}
             done={isDone()}
-            title={summary().title}
+            title={title()}
             duration={isDone() ? Locale.duration(duration()) : undefined}
           />
         </box>
-        <Show when={(!inMinimal() || expanded()) && summary().body}>
-          <box paddingLeft={inMinimal() ? 2 : 0} marginTop={1}>
-            <code
-              filetype="markdown"
-              drawUnstyledText={false}
-              // A finished summary does not stream: `true` here was a constant that
-              // made the renderer take its streaming path for content that never
-              // changes. Harmless, but it was also the shape that hid the defect above.
-              streaming={false}
-              syntaxStyle={subtleSyntax()}
-              content={summary().body}
-              conceal={ctx.conceal()}
-              fg={theme.textMuted}
-            />
-          </box>
+        <Show when={!inMinimal() || expanded()}>
+          <ReasoningBody text={content()} padded={inMinimal()} />
         </Show>
+      </box>
+    </Show>
+  )
+}
+
+/**
+ * The thinking body, mounted ONLY while it is actually shown.
+ *
+ * Keeping `reasoningSummary` in here is the point: this component does not exist while
+ * thinking is hidden, so the body slice is not computed at all — where computing it in
+ * `ReasoningPart` charged every delta for text that was never on screen.
+ */
+function ReasoningBody(props: { text: string; padded: boolean }) {
+  const { theme, subtleSyntax } = useTheme()
+  const ctx = use()
+  const summary = createMemo(() => reasoningSummary(props.text))
+
+  return (
+    <Show when={summary().body}>
+      <box paddingLeft={props.padded ? 2 : 0} marginTop={1}>
+        <code
+          filetype="markdown"
+          drawUnstyledText={false}
+          // A finished summary does not stream: `true` here was a constant that
+          // made the renderer take its streaming path for content that never
+          // changes. Harmless, but it was also the shape that hid the defect above.
+          streaming={false}
+          syntaxStyle={subtleSyntax()}
+          content={summary().body}
+          conceal={ctx.conceal()}
+          fg={theme.textMuted}
+        />
       </box>
     </Show>
   )

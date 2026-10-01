@@ -23,7 +23,7 @@ import { BashArity } from "@/permission/arity"
 import * as Truncate from "./truncate"
 import { Plugin } from "@/plugin"
 import { Git } from "@/git"
-import { Effect, Stream } from "effect"
+import { Clock, Effect, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import * as BashInteractive from "./bash-interactive"
@@ -705,6 +705,35 @@ export const BashTool = Tool.define(
       let expired = false
       let aborted = false
 
+      // Progress emissions are COALESCED.
+      //
+      // `Stream.decodeText` yields one chunk per stdout read, and the handler below
+      // emitted a metadata update for every one of them. Each emission is not cheap:
+      // the payload carries up to `MAX_METADATA_LENGTH` (30 KB) of output, it is
+      // published as a part update, the TUI's store reconciles the whole part against
+      // the new one, and the Bash renderer then re-runs `stripAnsi`, the row count and
+      // the clip over the whole 30 KB. A chatty command — a compiler log, a build —
+      // therefore paid that cost once per chunk, for frames no one can read: a terminal
+      // does not paint faster than a frame, and the model only needs the LAST value.
+      //
+      // Nothing is lost by skipping the intermediate ones: the tool's terminal result
+      // below always carries `output: last || preview(output)`, so the complete output
+      // reaches both the TUI and the model at the end of the call. This bounds the
+      // worst case without changing what any consumer ever sees.
+      const PROGRESS_EMIT_INTERVAL_MS = 100
+      let emittedAt = 0
+      const emitProgress = Effect.fnUntraced(function* () {
+        const now = yield* Clock.currentTimeMillis
+        if (now - emittedAt < PROGRESS_EMIT_INTERVAL_MS) return
+        emittedAt = now
+        yield* ctx.metadata({
+          metadata: {
+            output: last,
+            description: input.description,
+          },
+        })
+      })
+
       yield* ctx.metadata({
         metadata: {
           output: "",
@@ -748,24 +777,12 @@ export const BashTool = Tool.define(
                         full = ""
                       }),
                     ),
-                    Effect.andThen(
-                      ctx.metadata({
-                        metadata: {
-                          output: last,
-                          description: input.description,
-                        },
-                      }),
-                    ),
+                    Effect.andThen(emitProgress()),
                   )
                 }
               }
 
-              return ctx.metadata({
-                metadata: {
-                  output: last,
-                  description: input.description,
-                },
-              })
+              return emitProgress()
             }),
           )
 
