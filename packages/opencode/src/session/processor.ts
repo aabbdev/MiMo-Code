@@ -889,8 +889,19 @@ export const layer: Layer.Layer<
       })
 
       const halt = Effect.fn("SessionProcessor.halt")(function* (e: unknown) {
-        slog.error("process", { error: errorMessage(e), stack: e instanceof Error ? e.stack : undefined })
         const error = parse(e)
+        // A cancellation reaches here BY DESIGN: the `onInterrupt` handler below calls
+        // this to record the abort on the message, which is how the TUI renders it as
+        // aborted. So there is nothing to report, and logging it at ERROR buries the
+        // failures that DO need reading — measured: 29 lines of `error=Aborted process`
+        // in the recent logs, in a session whose real errors are a handful. Same rule the
+        // `catchCauseIf((cause) => !Cause.hasInterruptsOnly(cause))` guard above already
+        // applies to causes; this path never went through it.
+        if (aborted || MessageV2.AbortedError.isInstance(error)) {
+          slog.debug("halted after interrupt", { sessionID: ctx.sessionID })
+        } else {
+          slog.error("process", { error: errorMessage(e), stack: e instanceof Error ? e.stack : undefined })
+        }
         if (MessageV2.ContextOverflowError.isInstance(error)) {
           ctx.needsOverflowHandling = true
           yield* bus.publish(Session.Event.Error, { sessionID: ctx.sessionID, error })

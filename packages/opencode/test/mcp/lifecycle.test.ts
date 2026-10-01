@@ -1031,6 +1031,11 @@ test(
         lastCreatedClientName = "prompt-server"
         const serverState = getOrCreateClientState("prompt-server")
         serverState.prompts = [{ name: "my-prompt", description: "A test prompt" }]
+        // A server that SERVES prompts declares the capability at the handshake, and
+        // `MCP.prompts()` now asks only for what was declared — a server answering
+        // `-32601 Method not found` for a capability it never offered was being logged
+        // as an error on every call (measured: 219 occurrences in 20 log files).
+        serverState.serverCapabilities = { prompts: {} }
 
         yield* mcp.add("prompt-server", {
           type: "local",
@@ -1060,6 +1065,9 @@ test(
         lastCreatedClientName = "resource-server"
         const serverState = getOrCreateClientState("resource-server")
         serverState.resources = [{ name: "my-resource", uri: "file:///test.txt", description: "A test resource" }]
+        // Same as the prompts case above: the capability must be declared for the
+        // harness to ask for it.
+        serverState.serverCapabilities = { resources: {} }
 
         yield* mcp.add("resource-server", {
           type: "local",

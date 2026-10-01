@@ -3785,7 +3785,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                   const stopCfg = resolveUncommittedHintConfig({ liveContent, cached: cachedCfg })
                   const enabled = uncommittedHintEnabledFromConfig(stopCfg)
                   if (!enabled || turnSource !== "user") {
-                    yield* slog.warn(
+                    // Both reasons are refusals BY DESIGN — the feature is off, or this
+                    // is not a user turn — so neither is news. At WARN they were the
+                    // loudest thing in the file: measured 203 lines of
+                    // `reason=disabled` alone, in the 20 most recent logs. The
+                    // structured payload stays available, one level down, for the
+                    // question it was added to answer ("why did no hint appear").
+                    slog.debug(
                       "uncommitted-hint",
                       uncommittedHintLogFields({
                         decision: "skip",

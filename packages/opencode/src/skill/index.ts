@@ -91,6 +91,9 @@ export interface Interface {
   readonly reload: () => Effect.Effect<void>
 }
 
+/** Duplicate pairs already reported, so several instances in one process say it once. */
+const warnedDuplicates = new Set<string>()
+
 const add = Effect.fnUntraced(function* (state: State, match: string, bundledRoots: string[], bus: Bus.Interface) {
   const md = yield* Effect.tryPromise({
     try: () => ConfigMarkdown.parse(match),
@@ -123,11 +126,21 @@ const add = Effect.fnUntraced(function* (state: State, match: string, bundledRoo
     if (!isBundled && existing.bundled) {
       log.info("user skill overrides bundled", { name: parsed.data.name, location: match })
     } else {
-      log.warn("duplicate skill name", {
-        name: parsed.data.name,
-        existing: existing.location,
-        duplicate: match,
-      })
+      // Once per pair per PROCESS, not once per instance. Discovery is cached per
+      // instance, but a long-lived process builds several of them — measured: ~11
+      // warnings per process for the same two pairs, 438 lines across the 20 most
+      // recent logs, which is enough noise to hide a real warning. The fact does not
+      // change between instances; the user has to delete one of the two files either
+      // way, and the message already names both.
+      const pair = `${existing.location}\u0000${match}`
+      if (!warnedDuplicates.has(pair)) {
+        warnedDuplicates.add(pair)
+        log.warn("duplicate skill name", {
+          name: parsed.data.name,
+          existing: existing.location,
+          duplicate: match,
+        })
+      }
     }
   }
 

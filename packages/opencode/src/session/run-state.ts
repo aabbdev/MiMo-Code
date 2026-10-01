@@ -73,7 +73,13 @@ export const layer = Layer.effect(
       const isMain = agentID === "main"
       const next = Runner.make<MessageV2.WithParts, never, Session.BusyError>(data.scope, {
         label: `${sessionID}:${agentID}`,
-        onReentryWarn: (info) => elog.warn("runner-reentry", info),
+        // INFO, not WARN. A re-entry is the single-flight path working as designed:
+        // `ensureRunning` finds a run already in flight and awaits THAT one rather than
+        // starting a second, which is what a `/goal` re-entry and any concurrent request
+        // rely on. Measured: 109 lines, 97 of them the goal re-entries of one session —
+        // a nominal outcome in the problem stream. Kept at INFO so it stays discoverable
+        // to anyone asking "why did my turn not run separately".
+        onReentry: (info) => elog.info("runner-reentry", info),
         // Cleanup only when THIS runner is actually idle. Cancel must never
         // delete a map entry that has already been replaced by a newer run.
         onIdle: isMain

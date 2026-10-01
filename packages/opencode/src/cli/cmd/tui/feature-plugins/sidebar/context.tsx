@@ -1,6 +1,6 @@
 import type { AssistantMessage } from "@mimo-ai/sdk/v2"
 import type { TuiPlugin, TuiPluginApi, TuiPluginModule } from "@mimo-ai/plugin/tui"
-import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import { Show, createEffect, createMemo, createSignal, onCleanup, untrack } from "solid-js"
 import { completedTPS, formatTPS, streamingTPS } from "./tps"
 import * as Model from "@tui/util/model"
 import { Token } from "@/util"
@@ -44,13 +44,20 @@ export function ContextSidebar(props: { api: TuiPluginApi; session_id: string })
     if (!m) return null
 
     if (isStreaming()) {
-      tick() // reactivity dep so the readout updates between deltas
-      const parts = props.api.state.part(m.id)
-      const combined = parts
-        .filter((p) => p.type === "text" || p.type === "reasoning")
-        .map((p) => p.text)
-        .join("")
-      return streamingTPS(combined, m.time.created, Date.now())
+      // The tick is the update cadence, and reading the parts must NOT join it: a
+      // reactive read here would re-run this on EVERY streamed delta, each time
+      // re-joining the whole accumulated text — quadratic over one long answer, in
+      // our own code rather than in the renderer. Untracked, the join happens at most
+      // once a second, which is what a RATE wants anyway.
+      const now = tick()
+      return untrack(() => {
+        const parts = props.api.state.part(m.id)
+        const combined = parts
+          .filter((p) => p.type === "text" || p.type === "reasoning")
+          .map((p) => p.text)
+          .join("")
+        return streamingTPS(combined, m.time.created, now)
+      })
     }
 
     const idleTarget = msg().findLast(

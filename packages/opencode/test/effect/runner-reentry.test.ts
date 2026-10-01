@@ -3,15 +3,15 @@ import { Deferred, Effect, Fiber, Ref, Scope } from "effect"
 import { Runner } from "../../src/effect"
 import { it } from "../lib/effect"
 
-describe("Runner onReentryWarn", () => {
+describe("Runner onReentry", () => {
   it.live(
-    "fires onReentryWarn with label and run ID on Running re-entry",
+    "fires onReentry with label and run ID on Running re-entry",
     Effect.gen(function* () {
       const s = yield* Scope.Scope
       const warnings = yield* Ref.make<Array<{ label: string; existingRunId: number }>>([])
       const runner = Runner.make<string>(s, {
         label: "test-runner",
-        onReentryWarn: (info) => Ref.update(warnings, (arr) => [...arr, info]),
+        onReentry: (info) => Ref.update(warnings, (arr) => [...arr, info]),
       })
 
       const work = Effect.gen(function* () {
@@ -39,7 +39,7 @@ describe("Runner onReentryWarn", () => {
       const s = yield* Scope.Scope
       const warnings = yield* Ref.make<Array<{ label: string; existingRunId: number }>>([])
       const runner = Runner.make<string>(s, {
-        onReentryWarn: (info) => Ref.update(warnings, (arr) => [...arr, info]),
+        onReentry: (info) => Ref.update(warnings, (arr) => [...arr, info]),
       })
 
       const work = Effect.gen(function* () {
@@ -58,13 +58,13 @@ describe("Runner onReentryWarn", () => {
   )
 
   it.live(
-    "does not fire onReentryWarn when runner is idle",
+    "does not fire onReentry when runner is idle",
     Effect.gen(function* () {
       const s = yield* Scope.Scope
       const warnings = yield* Ref.make<Array<{ label: string; existingRunId: number }>>([])
       const runner = Runner.make<string>(s, {
         label: "idle-test",
-        onReentryWarn: (info) => Ref.update(warnings, (arr) => [...arr, info]),
+        onReentry: (info) => Ref.update(warnings, (arr) => [...arr, info]),
       })
 
       yield* runner.ensureRunning(Effect.succeed("first"))
@@ -76,13 +76,13 @@ describe("Runner onReentryWarn", () => {
   )
 
   it.live(
-    "fires onReentryWarn on ShellThenRun re-entry",
+    "fires onReentry on ShellThenRun re-entry",
     Effect.gen(function* () {
       const s = yield* Scope.Scope
       const warnings = yield* Ref.make<Array<{ label: string; existingRunId: number }>>([])
       const runner = Runner.make<string>(s, {
         label: "shell-reentry",
-        onReentryWarn: (info) => Ref.update(warnings, (arr) => [...arr, info]),
+        onReentry: (info) => Ref.update(warnings, (arr) => [...arr, info]),
       })
 
       const gate = yield* Deferred.make<void>()

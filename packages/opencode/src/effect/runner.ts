@@ -42,7 +42,7 @@ export const make = <A, E = never, B = never>(
     onInterrupt?: Effect.Effect<A, E>
     busy?: () => B
     label?: string
-    onReentryWarn?: (info: { label: string; existingRunId: number }) => Effect.Effect<void>
+    onReentry?: (info: { label: string; existingRunId: number }) => Effect.Effect<void>
   },
 ): Runner<A, E, B> => {
   const ref = SynchronizedRef.makeUnsafe<State<A, E>>({ _tag: "Idle" })
@@ -113,8 +113,8 @@ export const make = <A, E = never, B = never>(
         switch (st._tag) {
           case "Running":
           case "ShellThenRun":
-            if (opts?.onReentryWarn)
-              yield* opts.onReentryWarn({ label: opts.label ?? "(unlabeled)", existingRunId: st.run.id })
+            if (opts?.onReentry)
+              yield* opts.onReentry({ label: opts.label ?? "(unlabeled)", existingRunId: st.run.id })
             return [Deferred.await(st.run.done), st] as const
           case "Shell": {
             const run = {

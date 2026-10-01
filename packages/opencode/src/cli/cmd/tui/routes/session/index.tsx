@@ -2169,7 +2169,10 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
             <code
               filetype="markdown"
               drawUnstyledText={false}
-              streaming={true}
+              // A finished summary does not stream: `true` here was a constant that
+              // made the renderer take its streaming path for content that never
+              // changes. Harmless, but it was also the shape that hid the defect above.
+              streaming={false}
               syntaxStyle={subtleSyntax()}
               content={summary().body}
               conceal={ctx.conceal()}
@@ -2245,9 +2248,16 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
           </Match>
           <Match when={!Flag.MIMOCODE_EXPERIMENTAL_MARKDOWN}>
             <code
-              filetype="markdown"
+              // No `filetype` until the part has FINISHED. With one, opentui's
+              // startHighlight re-parses the WHOLE accumulated text on every content
+              // change, which is quadratic over a long answer — measured: the renderer
+              // calls `highlightOnce(this._content, filetype)` from `renderSelf`
+              // whenever the content is dirty. Without `filetype` it takes the plain
+              // text-buffer path and parses nothing. A half-written markdown block
+              // highlights wrongly anyway, so the parse belongs at the end, once.
+              filetype={props.part.time?.end === undefined ? undefined : "markdown"}
               drawUnstyledText={false}
-              streaming={true}
+              streaming={props.part.time?.end === undefined}
               syntaxStyle={syntax()}
               content={props.part.text.trim()}
               conceal={ctx.conceal()}
@@ -3484,17 +3494,36 @@ function Task(props: ToolProps<typeof ActorTool>) {
 
   const messages = createMemo(() => sync.data.message[targetSession() ?? ""]?.[targetBucket()] ?? [])
 
-  const tools = createMemo(() => {
-    return messages().flatMap((msg) =>
-      (sync.data.part[msg.id] ?? [])
-        .filter((part): part is ToolPart => part.type === "tool")
-        .map((part) => ({ tool: part.tool, state: part.state })),
-    )
+  /**
+   * The card needs two facts from a subagent's parts — how many tool calls it has
+   * made, and the last titled one — and this reads them in ONE pass.
+   *
+   * The previous shape built an array of `{ tool, state }` objects for every tool
+   * part and then searched it, and it read `sync.data.part[msg.id]` for every message,
+   * so ANY delta in that subagent's session re-ran the whole allocation. With two
+   * thirds of this harness's model calls now coming from `general` subagents, those
+   * cards are live for most of a session: hundreds of throwaway objects per delta, per
+   * card. Two scalars and one loop replace them; the semantics are identical.
+   */
+  const scan = createMemo(() => {
+    let count = 0
+    let last: { tool: string; state: ToolPart["state"] } | undefined
+    for (const msg of messages()) {
+      const parts = sync.data.part[msg.id]
+      if (!parts) continue
+      for (const part of parts) {
+        if (part.type !== "tool") continue
+        count++
+        if ((part.state.status === "running" || part.state.status === "completed") && part.state.title) {
+          last = { tool: part.tool, state: part.state }
+        }
+      }
+    }
+    return { count, last }
   })
 
-  const current = createMemo(() =>
-    tools().findLast((x) => (x.state.status === "running" || x.state.status === "completed") && x.state.title),
-  )
+  const tools = createMemo(() => scan().count)
+  const current = createMemo(() => scan().last)
 
   const isRunning = createMemo(() => {
     return isActorToolRunning({
@@ -3538,16 +3567,16 @@ function Task(props: ToolProps<typeof ActorTool>) {
 
     let content = [header]
 
-    if (isRunning() && tools().length > 0) {
+    if (isRunning() && tools() > 0) {
       if (current()) {
         const state = current()!.state
         const title = state.status === "running" || state.status === "completed" ? state.title : undefined
         content.push(`↳ ${Locale.titlecase(current()!.tool)} ${title}`)
-      } else content.push(`↳ ${tools().length} toolcalls`)
+      } else content.push(`↳ ${tools()} toolcalls`)
     }
 
     if (props.part.state.status === "completed" && !isRunning()) {
-      content.push(`└ ${tools().length} toolcalls · ${Locale.duration(duration())}`)
+      content.push(`└ ${tools()} toolcalls · ${Locale.duration(duration())}`)
     }
 
     return content.join("\n")

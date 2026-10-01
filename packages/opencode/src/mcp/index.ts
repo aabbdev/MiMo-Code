@@ -895,13 +895,34 @@ export const layer = Layer.effect(
       return result
     })
 
+/**
+ * Whether a server declared this capability at the handshake.
+ *
+ * MCP makes `resources` and `prompts` OPTIONAL, and a server that implements neither
+ * answers `-32601 Method not found` — which this file logged as an ERROR on every
+ * call: measured 219 occurrences of EACH in the 20 most recent log files, from one
+ * server (railway) that declares neither. Asking only for what was declared is what
+ * the protocol says, and it stops the false errors from burying the real ones.
+ *
+ * `tools` is deliberately NOT gated here: it is listed once at connect and cached, so
+ * a server without it costs one line rather than one per turn — and the "missing
+ * cached tools for connected server" warning downstream would replace one error with
+ * one warning per turn, which is worse.
+ */
+function declares(client: Client, capability: "resources" | "prompts"): boolean {
+  return client.getServerCapabilities()?.[capability] !== undefined
+}
+
     function collectFromConnected<T extends { name: string }>(
       s: State,
       listFn: (c: Client) => Promise<T[]>,
       label: string,
+      supported?: (c: Client) => boolean,
     ) {
       return Effect.forEach(
-        Object.entries(s.clients).filter(([name]) => s.status[name]?.status === "connected"),
+        Object.entries(s.clients)
+          .filter(([name]) => s.status[name]?.status === "connected")
+          .filter(([, client]) => (supported ? supported(client) : true)),
         ([clientName, client]) =>
           fetchFromClient(clientName, client, listFn, label).pipe(Effect.map((items) => Object.entries(items ?? {}))),
         { concurrency: "unbounded" },
@@ -910,12 +931,16 @@ export const layer = Layer.effect(
 
     const prompts = Effect.fn("MCP.prompts")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(s, (c) => c.listPrompts().then((r) => r.prompts), "prompts")
+      return yield* collectFromConnected(s, (c) => c.listPrompts().then((r) => r.prompts), "prompts", (c) =>
+        declares(c, "prompts"),
+      )
     })
 
     const resources = Effect.fn("MCP.resources")(function* () {
       const s = yield* InstanceState.get(state)
-      return yield* collectFromConnected(s, (c) => c.listResources().then((r) => r.resources), "resources")
+      return yield* collectFromConnected(s, (c) => c.listResources().then((r) => r.resources), "resources", (c) =>
+        declares(c, "resources"),
+      )
     })
 
     const withClient = Effect.fnUntraced(function* <A>(

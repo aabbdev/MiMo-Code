@@ -113,14 +113,14 @@ describe("SessionRunState tuple key — independent Runners per (sid, agentID)",
   )
 
   it.live(
-    "onReentryWarn fires when reentry detected on same Runner",
+    "onReentry fires when reentry detected on same Runner",
     Effect.gen(function* () {
       const s = yield* Scope.Scope
       const warnings: Array<{ label: string; existingRunId: number }> = []
 
       const runner = Runner.make<string>(s, {
         label: "session-1:main",
-        onReentryWarn: (info) =>
+        onReentry: (info) =>
           Effect.sync(() => {
             warnings.push(info)
           }),
