@@ -14,6 +14,7 @@ import { tmpdir } from "../fixture/fixture"
 import { Instance } from "../../src/project/instance"
 import { Goal } from "../../src/session/goal"
 import { SessionID } from "../../src/session/schema"
+import { turnWasIdle } from "../../src/session/prompt"
 import { Log } from "../../src/util"
 
 void Log.init({ print: false })
@@ -133,5 +134,65 @@ describe("Goal state machine", () => {
       }),
     )
     expect(got).toBeUndefined()
+  })
+})
+
+describe("goal idle-run gate: re-entering a turn that did nothing", () => {
+  // The premise, asserted rather than the fix's value. A goal-driven turn with no tool
+  // call cannot have changed anything, so the judge's "not satisfied" is guaranteed to
+  // repeat verbatim — and the cap only makes the loop longer. Measured on one session:
+  // 102 of 105 refusals made ZERO tool calls, spread over three days, each still
+  // carrying the whole context it had just declared exhausted. That session's cap had
+  // been raised to 30, which made the same futile loop 2.5x longer.
+
+  const turn = (role: string, ...parts: any[]) => ({ info: { role }, parts })
+  const toolUse = { type: "tool", tool: "read", state: { status: "completed", output: "x" } }
+  const textOnly = { type: "text", text: "Mon contexte est épuisé ; je m'arrête." }
+
+  test("a turn with no tool call is idle, and ONE tool call is work", () => {
+    expect(turnWasIdle([turn("user"), turn("assistant", textOnly)])).toBe(true)
+    expect(turnWasIdle([turn("user"), turn("assistant", textOnly, toolUse)])).toBe(false)
+  })
+
+  test("work from an EARLIER turn is not evidence that this one did anything", () => {
+    // The whole rule is scoped to the turn being judged. Counting the session's earlier
+    // tool calls would make every later turn look productive and the gate would never
+    // fire — which is exactly how 102 idle turns went unnoticed.
+    const msgs = [
+      turn("user"),
+      turn("assistant", toolUse),
+      turn("user"),
+      turn("assistant", textOnly),
+    ]
+    expect(turnWasIdle(msgs)).toBe(true)
+  })
+
+  test("a run of idle turns is counted, and a turn that worked clears it", async () => {
+    await using tmp = await tmpdir({})
+    const got = await runGoal(tmp.path, (goal) =>
+      Effect.gen(function* () {
+        yield* goal.set(ses, "tests pass")
+        const first = yield* goal.bumpIdle(ses, true)
+        const second = yield* goal.bumpIdle(ses, true)
+        const cleared = yield* goal.bumpIdle(ses, false)
+        const afterWork = yield* goal.bumpIdle(ses, true)
+        return { first, second, cleared, afterWork }
+      }),
+    )
+    expect(got).toEqual({ first: 1, second: 2, cleared: 0, afterWork: 1 })
+  })
+
+  test("a genuine user turn resets the run, like it resets the attempt budget", async () => {
+    await using tmp = await tmpdir({})
+    const got = await runGoal(tmp.path, (goal) =>
+      Effect.gen(function* () {
+        yield* goal.set(ses, "tests pass")
+        yield* goal.bumpIdle(ses, true)
+        yield* goal.bumpIdle(ses, true)
+        yield* goal.resetReact(ses)
+        return yield* goal.bumpIdle(ses, true)
+      }),
+    )
+    expect(got).toBe(1)
   })
 })

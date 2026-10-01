@@ -28,6 +28,19 @@ export type Goal = {
   condition: string
   /** Number of judge-driven re-entries so far; bounded by MAX_GOAL_REACT in prompt.ts. */
   react: number
+  /**
+   * CONSECUTIVE judge-driven re-entries whose turn did no work — no tool call at all.
+   *
+   * This is the progress signal the re-entry rule was missing. `react` counts attempts
+   * and the cap only bounds them; whether an attempt could have changed anything was
+   * never asked. Measured on one session: 102 of 105 goal-driven refusals made zero
+   * tool calls, spread over three days, each one still carrying the whole context it
+   * had just declared exhausted. A turn with no tool calls cannot have changed the
+   * world, so re-entering it is a remedy that cannot succeed — the same rule the rest
+   * of this harness applies to retries. Reset by any turn that did work, and by a
+   * genuine user turn.
+   */
+  idle: number
 }
 
 export const Verdict = z.object({
@@ -54,6 +67,8 @@ export const Event = {
         /** The assistant message the judge evaluated — anchors the verdict to a turn. */
         messageID: z.string().optional(),
         error: z.boolean().optional(),
+        /** Set when the loop was stopped rather than re-entered, and why. */
+        stopped: z.string().optional(),
       }).optional(),
     }),
   ),
@@ -90,6 +105,7 @@ export interface Interface {
    * inherit a counter spent by a previous (possibly interrupted) run.
    */
   readonly resetReact: (sessionID: SessionID) => Effect.Effect<void>
+  readonly bumpIdle: (sessionID: SessionID, idle: boolean) => Effect.Effect<number>
   /**
    * Run the judge over the conversation against the active goal's condition.
    * `msgs` is the main thread's message list; it is converted to native model
@@ -122,7 +138,7 @@ export const layer = Layer.effect(
 
     const set = Effect.fn("SessionGoal.set")(function* (sessionID: SessionID, condition: string) {
       const data = yield* InstanceState.get(state)
-      data.goals.set(sessionID, { condition, react: 0 })
+      data.goals.set(sessionID, { condition, react: 0, idle: 0 })
       yield* elog.info("goal set", { sessionID, condition })
       yield* bus.publish(Event.Updated, { sessionID, goal: { condition } })
     })
@@ -158,6 +174,21 @@ export const layer = Layer.effect(
       const goal = data.goals.get(sessionID)
       if (!goal) return
       goal.react = 0
+      goal.idle = 0
+    })
+
+    /**
+     * Record whether the judged turn did any work, and return the run of idle turns.
+     *
+     * A turn that did work clears the run: the agent is still moving, so the next
+     * re-entry is worth making. Only a run of idle turns means re-entering cannot help.
+     */
+    const bumpIdle = Effect.fn("SessionGoal.bumpIdle")(function* (sessionID: SessionID, idle: boolean) {
+      const data = yield* InstanceState.get(state)
+      const goal = data.goals.get(sessionID)
+      if (!goal) return 0
+      goal.idle = idle ? goal.idle + 1 : 0
+      return goal.idle
     })
 
     const evaluate = Effect.fn("SessionGoal.evaluate")(function* (input: {
@@ -254,7 +285,7 @@ export const layer = Layer.effect(
       return yield* Effect.promise(() => generateObject(params).then((r) => Verdict.parse(r.object)))
     })
 
-    return Service.of({ set, get, clear, bumpReact, resetReact, evaluate })
+    return Service.of({ set, get, clear, bumpReact, resetReact, bumpIdle, evaluate })
   }),
 )
 

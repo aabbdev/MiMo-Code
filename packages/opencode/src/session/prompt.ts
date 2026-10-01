@@ -255,6 +255,37 @@ export function stableRootTitle(input: { agent: string | undefined; parentID: st
 const MAX_GOAL_REACT = 12
 
 /**
+ * How many CONSECUTIVE re-entries may produce no work before the loop stops.
+ *
+ * One is allowed: a goal-driven turn that stops to plan is a legitimate stop, and
+ * re-entering it is exactly what this mechanism exists for. Two in a row is not — the
+ * context is unchanged and the model has declined twice, so a third attempt is a remedy
+ * that cannot succeed. The harness uses three strikes for repeated steps and repeated
+ * text; this is tighter because each attempt carries a whole context and is visible to
+ * the user, and because the measured case was 102 identical refusals over three days.
+ */
+const MAX_GOAL_IDLE_REACT = 2
+
+/**
+ * Whether the judged turn did any work — any tool call at all.
+ *
+ * `react` counts attempts and the cap only bounds them; this asks the question the
+ * re-entry rule never asked. A turn that called no tool cannot have changed anything,
+ * so the judge's "not satisfied" is guaranteed to repeat verbatim: measured, 102 of 105
+ * goal-driven refusals in one session made zero tool calls, each still carrying the
+ * context it had just declared exhausted.
+ *
+ * Pure, so the rule is testable without a session, and scoped to the turn being judged:
+ * everything after the last user message. Tool calls from earlier turns are not evidence
+ * that THIS attempt did anything.
+ */
+export function turnWasIdle(msgs: MessageV2.WithParts[]): boolean {
+  const lastUser = msgs.findLastIndex((m) => m.info.role === "user")
+  const turn = lastUser >= 0 ? msgs.slice(lastUser + 1) : msgs
+  return !turn.some((m) => m.parts.some((p) => p.type === "tool"))
+}
+
+/**
  * Number of consecutive finished assistant steps with an identical action
  * signature that trips the repeated-step nudge. Three in a row is a strong
  * signal the model is stuck repeating itself rather than making progress.
@@ -4157,6 +4188,28 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               },
             })
             yield* goal.clear(sessionID)
+            return false
+          }
+
+          // Ask whether re-entering could help BEFORE spending an attempt on it. A run of
+          // idle turns is a loop the cap would only make longer — and the cap was raised
+          // to 30 on this very session, which turned the same futile loop from 12 refusals
+          // into a longer one. Stop, KEEP the goal (it is genuinely unmet and the user
+          // should still see it), and say why instead of looping silently.
+          const idle = yield* goal.bumpIdle(sessionID, turnWasIdle(transcriptMsgs))
+          if (idle >= MAX_GOAL_IDLE_REACT) {
+            const stopped = `${idle} consecutive goal turns made no tool calls`
+            yield* slog.warn("goal re-entry stopped; no work was being done", {
+              sessionID,
+              condition: active.condition,
+              attempts: active.react,
+              stopped,
+            })
+            yield* bus.publish(Goal.Event.Updated, {
+              sessionID,
+              goal: { condition: active.condition },
+              lastVerdict: { ...verdict, attempt: active.react, messageID: judgedMessageID, stopped },
+            })
             return false
           }
 
