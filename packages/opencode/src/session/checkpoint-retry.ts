@@ -164,16 +164,60 @@ export function buildReflectionMessage(
 }
 
 /**
- * Build a reflection prompt for extract-required budget violations. Instructs
- * the writer to split over-budget files into spillover files rather than
- * fixing structural errors.
+ * How far BELOW the budget an extraction must land.
+ *
+ * Without a margin, a writer that trims to exactly the limit re-trips the validator
+ * on the next write — and, because the extraction itself inserts an index line, a
+ * trim to the exact limit is guaranteed to be over again. That is the "remedy that
+ * cannot succeed" shape, so the target is deliberately not the limit.
+ */
+export const EXTRACTION_MARGIN_RATIO = 0.05
+export const EXTRACTION_MARGIN_FLOOR = 200
+
+/** The token count an extraction must reach: the budget minus a margin. */
+export function extractionTarget(limit: number) {
+  return limit - Math.max(EXTRACTION_MARGIN_FLOOR, Math.round(limit * EXTRACTION_MARGIN_RATIO))
+}
+
+/**
+ * Build the reflection sent when a file or section is over budget.
+ *
+ * Measured need: on this machine the checkpoint-writer's ReAct loop hit its cap 21
+ * times, every one of them an `extract-required` from MEMORY.md's "Discovered durable
+ * knowledge" section (5 808 tokens against a 4 000 budget). The writer HAD extracted
+ * — the spillover files exist — but the section stayed over, so the hook asked again
+ * and the loop could not converge. The numbers were already in each `detail`; what
+ * the instruction lacked was the two things that make an extraction sufficient:
+ *
+ *   1. a QUANTIFIED target ("extract at least N tokens, to T or below"), not a
+ *      qualitative "extract the less-important cluster" that a writer can satisfy
+ *      with one small move while the file stays over budget;
+ *   2. the explicit permission to do as MUCH as it takes in this single pass, and the
+ *      reason it is safe: extraction is lossless, the spillover file stays on disk and
+ *      is read on demand, so moving material out discards nothing.
+ *
+ * The text says a re-measurement follows immediately, because it does: the plugin
+ * validates again the moment the writer stops.
  */
 export function buildExtractionReflection(violations: Violation[]): string {
   const overBudget = violations.filter((v) => v.severity === "extract-required")
-  const files = overBudget.map((v) => `${v.file} (${v.detail})`).join(", ")
-  return `EXTRACTION REQUIRED: The following files exceed their token budget: ${files}.
+  const shortfalls = overBudget.map((v) => {
+    if (!v.budget) return `- ${v.file}: ${v.detail}`
+    const target = extractionTarget(v.budget.limit)
+    const remove = v.budget.current - target
+    return `- ${v.file} → ${v.budget.scope}: ${v.budget.current} tokens against a ${v.budget.limit} budget. Extract at least ${remove} tokens (landing at ${target} or below).`
+  })
 
-Extract the LESS-IMPORTANT topic cluster from the over-budget file into a new spillover file:
+  return `EXTRACTION REQUIRED — a measured shortfall, not a suggestion. The extraction you do now is re-measured the moment you stop, and anything still above its budget consumes the remaining repair turns.
+
+Over budget:
+${shortfalls.join("\n")}
+
+Extract the LEAST-IMPORTANT material from EACH target until it is at or below the number given above. There is no limit on how many spillover files you create in this one pass — create as many as it takes. Moving one small cluster out and stopping is the failure mode this instruction exists to prevent, and it is why the loop could not converge before.
+
+Extraction is lossless: the spillover file stays on disk and is read on demand, so nothing is discarded by moving it out. Do not leave a target over budget because its content looks important — importance decides WHICH cluster moves, never WHETHER it moves.
+
+Spillover targets:
   - Checkpoint spillover: checkpoint-<topic>.md (sibling of checkpoint.md)
   - Memory spillover: MEMORY-<topic>.md (sibling of MEMORY.md)
 
@@ -184,9 +228,7 @@ Selection criteria for "less important" (extract THESE first):
   - Topics not directly relevant to the current focus task
 
 After extraction, edit the main file to:
-  - REMOVE the extracted lines
+  - REMOVE the extracted lines (this is the step that lowers the count — an index line alone does not)
   - INSERT an index line near the bottom:
-    "- See <spillover-filename>.md (N entries) — short summary"
-
-Re-validation will run after this single extraction.`
+    "- See <spillover-filename>.md (N entries) — short summary"`
 }

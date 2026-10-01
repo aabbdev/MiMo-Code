@@ -36,6 +36,14 @@ export async function CheckpointSplitoverPlugin(pluginInput: PluginInput): Promi
 
           const extractRequired = violations.filter((v) => v.severity === "extract-required")
           if (extractRequired.length > 0) {
+            // Log the ask. Without this line the only trace of a repair that never
+            // converged was the cap warning in actor/spawn.ts, which cannot say WHY
+            // the loop was still going — 21 abandoned repairs produced one unhelpful
+            // WARN each and nothing a user could act on.
+            log.warn("checkpoint over budget; asking the writer to extract", {
+              actorID: input.actorID,
+              targets: extractRequired.map((v) => `${v.file}: ${v.detail}`),
+            })
             output.continue = true
             output.reason = buildExtractionReflection(extractRequired)
             return
@@ -43,6 +51,10 @@ export async function CheckpointSplitoverPlugin(pluginInput: PluginInput): Promi
 
           const errors = violations.filter((v) => v.severity === "error")
           if (errors.length > 0) {
+            log.warn("checkpoint failed validation; asking the writer to repair", {
+              actorID: input.actorID,
+              errors: errors.map((v) => `${v.file}: ${v.rule} — ${v.detail}`),
+            })
             output.continue = true
             output.reason = buildReflectionMessage(errors, {
               checkpoint: checkpointPath(sessionID),

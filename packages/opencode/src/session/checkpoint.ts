@@ -37,7 +37,7 @@ import {
 } from "./checkpoint-paths"
 import { readBudgeted, readBudgetedSectionAware } from "./budgeted-read"
 import type { LastMessageInfo } from "./last-message-info"
-import { CHECKPOINT_TEMPLATE, MEMORY_TEMPLATE, NOTES_TEMPLATE, CHECKPOINT_SECTION_BUDGETS } from "./checkpoint-templates"
+import { CHECKPOINT_TEMPLATE, MEMORY_TEMPLATE, NOTES_TEMPLATE, CHECKPOINT_SECTION_BUDGETS, MEMORY_SECTION_BUDGETS } from "./checkpoint-templates"
 import { adjustBoundaryForApiInvariants } from "./boundary"
 import { alignToNonToolResultUser } from "./checkpoint-align"
 import { loadPriorDiscoveredTitles } from "./checkpoint-retry"
@@ -346,19 +346,37 @@ export function computeBoundary(
   return msgs[startIdx].info.id
 }
 
-function renderSectionBudgets(budgets: Record<string, number>): string {
-  const entries = Object.entries(budgets)
-  if (entries.length === 0) {
-    throw new Error("CHECKPOINT_SECTION_BUDGETS is empty — F43 substitution would produce an empty prompt block")
-  }
-  const cols = 3
-  const lines: string[] = ["Section budgets (~tokens):"]
-  for (let i = 0; i < entries.length; i += cols) {
-    const row = entries
-      .slice(i, i + cols)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join("    ")
-    lines.push(`   ${row}`)
+/**
+ * Render the section budgets the writer must respect.
+ *
+ * BOTH maps are rendered, because the writer writes BOTH files and only the
+ * checkpoint's budgets used to reach it. The omission was not cosmetic: measured on
+ * this machine, the checkpoint-writer's ReAct loop hit its cap 21 times and every one
+ * was an `extract-required` from MEMORY.md's "Discovered durable knowledge" section
+ * (5 808 tokens against a 4 000 budget). Point 4 of the writer prompt tells it to
+ * APPEND durable findings to that section on every pass, so a writer that cannot see
+ * the ceiling grows through it every time — and the repair loop that follows is the
+ * harness paying for information it already had. A budget the writer cannot see is
+ * not a budget it can respect.
+ */
+function renderSectionBudgets(
+  groups: { title: string; budgets: Record<string, number> }[],
+): string {
+  const lines: string[] = []
+  for (const group of groups) {
+    const entries = Object.entries(group.budgets)
+    if (entries.length === 0) {
+      throw new Error(`${group.title} is empty — F43 substitution would produce an empty prompt block`)
+    }
+    lines.push(`${group.title} (~tokens):`)
+    const cols = 3
+    for (let i = 0; i < entries.length; i += cols) {
+      const row = entries
+        .slice(i, i + cols)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("    ")
+      lines.push(`   ${row}`)
+    }
   }
   return lines.join("\n")
 }
@@ -403,7 +421,13 @@ function composeWriterPrompt(input: {
     "",
     input.progressDiff,
     "",
-    PROMPT_CHECKPOINT_WRITER.replace("{{SECTION_BUDGETS}}", renderSectionBudgets(CHECKPOINT_SECTION_BUDGETS)),
+    PROMPT_CHECKPOINT_WRITER.replace(
+      "{{SECTION_BUDGETS}}",
+      renderSectionBudgets([
+        { title: "checkpoint.md sections", budgets: CHECKPOINT_SECTION_BUDGETS },
+        { title: "MEMORY.md sections", budgets: MEMORY_SECTION_BUDGETS },
+      ]),
+    ),
     "</system-reminder>",
     "",
     `Write the next checkpoint for this session.`,

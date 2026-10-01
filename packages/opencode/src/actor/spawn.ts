@@ -490,9 +490,14 @@ export const layer = Layer.effect(
                   actorID: input.actorID,
                   agentType: input.agentType,
                 })
+                // Carry the reason the last turn was asked to act on. The cap alone
+                // says the loop stopped; it does not say WHAT was still being repaired,
+                // which is the part a reader needs — the previous turn's output is
+                // never re-validated once this breaks.
                 log.warn("actor.preStop hit MAX_PRE_REACT cap; skipping further hook checks", {
                   actorID: input.actorID,
                   totalTurns: iteration,
+                  lastHookReason: lastDecision?.reason.split("\n")[0],
                 })
                 break
               }
@@ -611,6 +616,7 @@ export const layer = Layer.effect(
                     log.warn("actor.postStop hit MAX_POST_REACT cap; skipping further hook checks", {
                       actorID: input.actorID,
                       totalTurns: postIter + 1,
+                      lastHookReason: decision.reason.split("\n")[0],
                     })
                     break
                   }

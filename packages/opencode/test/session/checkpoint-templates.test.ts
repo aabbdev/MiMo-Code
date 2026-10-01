@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { CHECKPOINT_TEMPLATE, CHECKPOINT_SECTION_BUDGETS, NOTES_TEMPLATE } from "../../src/session/checkpoint-templates"
+import { CHECKPOINT_TEMPLATE, CHECKPOINT_SECTION_BUDGETS, MEMORY_SECTION_BUDGETS, NOTES_TEMPLATE } from "../../src/session/checkpoint-templates"
 
 describe("Checkpoint templates v8.1", () => {
   test("CHECKPOINT_TEMPLATE includes §10 Design decisions (F13)", () => {
@@ -47,5 +47,26 @@ describe("Checkpoint templates v8.1", () => {
     }
     // Placeholder must be substituted out
     expect(out).not.toContain("{{SECTION_BUDGETS}}")
+  })
+
+  test("composeWriterPrompt also renders the MEMORY.md section budgets", async () => {
+    // The writer writes BOTH files, and it APPENDS to MEMORY.md's "Discovered durable
+    // knowledge" on every pass. Only the checkpoint's budgets used to reach it, so it
+    // grew through a ceiling it could not see: measured, every one of the 21 ReAct-cap
+    // hits on this machine was an extract-required from that MEMORY.md section. A budget
+    // the writer cannot see is not a budget it can respect.
+    const { composeWriterPromptForTest } = await import("../../src/session/checkpoint")
+    const out = composeWriterPromptForTest({
+      checkpointFile: "/tmp/test/checkpoint.md",
+      memoryFile: "/tmp/test/memory.md",
+      taskMemDir: "/tmp/test/tasks",
+      notesFile: "/tmp/test/notes.md",
+      rangeDesc: "test range",
+      progressDiff: "",
+    })
+    expect(out).toContain("MEMORY.md sections")
+    for (const [section, budget] of Object.entries(MEMORY_SECTION_BUDGETS)) {
+      expect(out).toContain(`${section}: ${budget}`)
+    }
   })
 })

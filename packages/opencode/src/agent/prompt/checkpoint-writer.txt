@@ -143,9 +143,17 @@ CRITICAL CONSTRAINTS:
 
 5. {{SECTION_BUDGETS}}
 
-   If a section is approaching budget, EXTRACT a coherent topic to <sid>/checkpoint-<topic>.md and replace the extracted lines in the main section with:
+   These are CEILINGS, not targets — stay at or below them as you write, in BOTH files.
+   If any section is at or over its budget before you finish, EXTRACT a coherent topic
+   out of that section and replace the extracted lines in the main section with:
 
-   - See checkpoint-<topic>.md (N items) - <one-line summary>
+   - See checkpoint-<topic>.md (N items) - <one-line summary>     [checkpoint.md spillover]
+   - See MEMORY-<topic>.md (N items) - <one-line summary>         [MEMORY.md spillover]
+
+   Extraction is lossless: the spillover file stays on disk and is read on demand, so
+   nothing is lost by moving it out. Extract as MANY topics as it takes to get each
+   section under budget in this same pass — a section left over budget is re-measured
+   the moment you stop and costs you another turn.
 
    The index line is preserved across all rebuilds; do not nest spillovers (don't spill from a spillover).
 

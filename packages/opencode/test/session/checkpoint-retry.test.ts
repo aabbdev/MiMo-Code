@@ -5,6 +5,7 @@ import {
   quarantineCheckpoint,
   buildReflectionMessage,
   buildExtractionReflection,
+  extractionTarget,
   runValidatorsForCkpt,
   runTaskProgressValidators,
   loadPriorDiscoveredTitles,
@@ -138,13 +139,63 @@ describe("runValidatorsForCkpt budget", () => {
   })
 })
 
+describe("extractionTarget", () => {
+  test("lands below the limit, never on it", () => {
+    // Trimming to exactly the limit re-trips the validator — and the extraction
+    // inserts an index line of its own, so landing on the limit is guaranteed to
+    // be over again on the next write.
+    const target = extractionTarget(4000)
+    expect(target).toBeLessThan(4000)
+    expect(target).toBe(3800) // 5 % = 200, which equals the floor
+  })
+
+  test("the floor dominates a small budget", () => {
+    // 5 % of 500 is 25, below the floor, so the floor decides.
+    expect(extractionTarget(500)).toBe(300)
+  })
+})
+
 describe("buildExtractionReflection", () => {
-  test("produces prompt mentioning over-budget files", () => {
+  test("names the reduction required, not just that a budget was missed", () => {
     const msg = buildExtractionReflection([
-      { file: "checkpoint.md", rule: "budget-exceeded", severity: "extract-required", detail: "12000 tokens > 8000 budget" },
+      {
+        file: "MEMORY.md",
+        rule: "section-budget-exceeded",
+        severity: "extract-required",
+        detail: `section "Discovered durable knowledge" is 5808 tokens (budget 4000)`,
+        budget: { current: 5808, limit: 4000, scope: `section "Discovered durable knowledge"` },
+      },
     ])
     expect(msg).toContain("EXTRACTION REQUIRED")
-    expect(msg).toContain("checkpoint.md (12000 tokens > 8000 budget)")
+    expect(msg).toContain("MEMORY.md")
+    expect(msg).toContain(`section "Discovered durable knowledge"`)
+    // The target is 4000 - 200 = 3800, so 5808 - 3800 = 2008 tokens must move.
+    expect(msg).toContain("Extract at least 2008 tokens")
+    expect(msg).toContain("landing at 3800 or below")
     expect(msg).toContain("spillover")
+  })
+
+  test("permits as many spillover files as it takes, and says extraction is lossless", () => {
+    // The measured failure: the writer extracted ONE cluster while the section
+    // stayed over budget, so the hook asked again until the ReAct cap cut it (21
+    // times on this machine). The instruction has to forbid that shape explicitly.
+    const msg = buildExtractionReflection([
+      {
+        file: "MEMORY.md",
+        rule: "budget-exceeded",
+        severity: "extract-required",
+        detail: "12000 tokens > 8000 budget",
+        budget: { current: 12000, limit: 8000, scope: "whole file" },
+      },
+    ])
+    expect(msg).toContain("no limit on how many spillover files")
+    expect(msg).toContain("Extraction is lossless")
+  })
+
+  test("falls back to the raw detail when a violation carries no numbers", () => {
+    const msg = buildExtractionReflection([
+      { file: "checkpoint.md", rule: "section-budget-exceeded", severity: "extract-required", detail: "odd" },
+    ])
+    expect(msg).toContain("checkpoint.md: odd")
   })
 })

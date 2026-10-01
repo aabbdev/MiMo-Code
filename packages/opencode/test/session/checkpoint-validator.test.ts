@@ -185,5 +185,19 @@ describe("validateBudgetSections", () => {
     const violations = validateBudgetSections(big, CHECKPOINT_SECTION_BUDGETS, "checkpoint.md")
     expect(violations.some((v) => v.detail.includes("§7"))).toBe(true)
   })
+
+  test("hands the numbers over structurally, so no prompt has to parse the detail", () => {
+    // buildExtractionReflection computes `current - target` from these; recovering
+    // them by regex over `detail` would be a second place for the format to drift.
+    const big = "## §7 Discovered knowledge (cross-task)\n_instr_\n" + "- entry ".repeat(2000)
+    const section = validateBudgetSections(big, CHECKPOINT_SECTION_BUDGETS, "checkpoint.md")[0]
+    expect(section.budget).toBeDefined()
+    expect(section.budget!.scope).toBe(`section "§7 Discovered knowledge (cross-task)"`)
+    expect(section.budget!.limit).toBe(CHECKPOINT_SECTION_BUDGETS["§7 Discovered knowledge (cross-task)"])
+    expect(section.budget!.current).toBeGreaterThan(section.budget!.limit)
+
+    const fileViolation = validateBudget("a".repeat(12000), 2000, "MEMORY.md")[0]
+    expect(fileViolation.budget).toEqual({ current: 3000, limit: 2000, scope: "whole file" })
+  })
 })
 

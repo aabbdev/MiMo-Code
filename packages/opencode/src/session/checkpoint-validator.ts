@@ -20,6 +20,13 @@ export type Violation = {
   rule: ValidationRule
   severity: "warn" | "error" | "extract-required"
   detail: string
+  /**
+   * Present on budget violations only. The validator already knows the numbers, so
+   * it hands them over as numbers instead of leaving the retry prompt to re-parse
+   * its own prose to recover them — the prompt needs `current - target` to say how
+   * much to remove, and a regex over `detail` is a second place for that to drift.
+   */
+  budget?: { current: number; limit: number; scope: string }
 }
 
 export const TOPIC_MAX_CHARS = 80
@@ -220,6 +227,7 @@ export function validateBudget(content: string, budget: number, filename: string
       rule: "budget-exceeded",
       severity: "extract-required",
       detail: `${tokens} tokens > ${budget} budget`,
+      budget: { current: tokens, limit: budget, scope: "whole file" },
     },
   ]
 }
@@ -252,6 +260,7 @@ export function validateBudgetSections(
         rule: "section-budget-exceeded",
         severity: "extract-required",
         detail: `section "${sectionTitle}" is ${tokens} tokens (budget ${budget})`,
+        budget: { current: tokens, limit: budget, scope: `section "${sectionTitle}"` },
       })
     }
   }
