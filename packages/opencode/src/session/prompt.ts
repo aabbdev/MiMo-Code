@@ -279,7 +279,7 @@ const MAX_GOAL_IDLE_REACT = 2
  * everything after the last user message. Tool calls from earlier turns are not evidence
  * that THIS attempt did anything.
  */
-export function turnWasIdle(msgs: MessageV2.WithParts[]): boolean {
+export function turnWasIdle(msgs: Array<{ info: { role: string }; parts: Array<{ type: string }> }>): boolean {
   const lastUser = msgs.findLastIndex((m) => m.info.role === "user")
   const turn = lastUser >= 0 ? msgs.slice(lastUser + 1) : msgs
   return !turn.some((m) => m.parts.some((p) => p.type === "tool"))
