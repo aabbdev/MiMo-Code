@@ -492,7 +492,13 @@ export const layer = Layer.effect(
       return yield* Effect.forEach(
         selected,
         Effect.fnUntraced(function* (tool: Tool.Def) {
-          using _ = log.time(tool.id)
+          // No per-tool timing here. `Log.time` writes an INFO pair (`status=started`
+          // then `status=completed duration=N`) wherever it is placed, so one inside
+          // this loop — which runs once per tool per resolution — produced 180 706
+          // lines of a single 19.6 MB log: **89 % of it**, written by default, for a
+          // duration nobody reads. The operation itself is already timed once per turn
+          // by `log.time("resolveTools")` at the call site in session/prompt.ts, so
+          // removing this loses no measurement at all — only the 76x duplication.
           const output = {
             description: tool.id === BashTool.id && availableTools.useGPTTools ? bashDescription(true) : tool.description,
             parameters: tool.parameters,
