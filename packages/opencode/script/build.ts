@@ -322,8 +322,17 @@ if (Script.release) {
   for (const key of Object.keys(binaries)) {
     if (key.includes("linux")) {
       await $`tar -czf ../../${key}.tar.gz *`.cwd(`dist/${key}/bin`)
-    } else {
+    } else if (Bun.which("zip")) {
       await $`zip -r ../../${key}.zip *`.cwd(`dist/${key}/bin`)
+    } else {
+      // `zip` is not installed everywhere (measured: absent on this machine, where the
+      // release build died HERE — after every target had been compiled, ten minutes in,
+      // and before the upload, so the release was left with no assets at all). Python's
+      // zipfile is in every image that has python3; it writes the file mode into the
+      // entry, so an archive made this way is not a degraded one.
+      await $`python3 -c "import os,sys,zipfile;z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED);[z.write(f) for f in sorted(os.listdir('.')) if os.path.isfile(f)];z.close()" ../../${key}.zip`.cwd(
+        `dist/${key}/bin`,
+      )
     }
   }
   await $`gh release upload v${Script.version} ./dist/*.zip ./dist/*.tar.gz --clobber --repo ${process.env.GH_REPO}`
