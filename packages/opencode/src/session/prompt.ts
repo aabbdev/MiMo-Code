@@ -267,6 +267,16 @@ const MAX_GOAL_REACT = 12
 const MAX_GOAL_IDLE_REACT = 2
 
 /**
+ * Context size below which a cold resume is not worth rebuilding for.
+ *
+ * A rebuild keeps the checkpoint plus a 10-20K token tail of the transcript, so it only
+ * shrinks a context that is already larger than that. Below this floor the full-price
+ * re-read costs a fraction of a cent and there is nothing to trade — the transcript is
+ * cheaper to keep than the summary is to substitute for it.
+ */
+const COLD_RESUME_MIN_TOKENS = 60_000
+
+/**
  * Whether the judged turn did any work — any tool call at all.
  *
  * `react` counts attempts and the cap only bounds them; this asks the question the
@@ -4830,6 +4840,58 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 writerModel: yield* resolveWriterModel(model),
               })
               .pipe(Effect.ignore)
+          }
+
+          // Cold-resume rebuild.
+          //
+          // The provider's prompt cache expires on inactivity (`model.cacheTTL`, 5
+          // minutes by default). Measured over three days of real sessions: a call
+          // resumed after 5-15 minutes of idle re-read 89x more UNCACHED tokens than one
+          // made within seconds, and after 15 minutes 357x. Those 114 calls were 2.5 %
+          // of all calls and carried 54 % of the entire uncached bill — and uncached
+          // input is charged at 50x the cached rate ($0.30/M against $0.006/M), which
+          // makes it the largest single cost the harness has.
+          //
+          // The same fact is the opportunity. At that moment the transcript is going to
+          // be re-read at full price ANYWAY, and the cache it would have protected is
+          // already gone — so this is the one moment where rebuilding from the checkpoint
+          // costs nothing. It is not a trade against cache stability, because there is no
+          // cache left to destabilise; it is the epoch boundary at which compression is
+          // free.
+          //
+          // `rebuildFromCheckpoint`, not `rebuildEnsuringCheckpoint`: the former returns
+          // false when there is no usable checkpoint and does NOT start a writer, so a
+          // session that has never crossed a checkpoint threshold keeps its transcript
+          // and pays exactly what it would have paid. Only a session that already has a
+          // checkpoint trades its older history for the summary of it — and it keeps a
+          // 10-20K token tail, which is the contract the checkpoint mechanism already
+          // applies at every threshold crossing.
+          if (
+            !skipOverflowCheck &&
+            !usageRecovered &&
+            !isBoundedComputation &&
+            lastFinished &&
+            lastFinished.summary !== true &&
+            (!lastUser.agentID || lastUser.agentID === "main") &&
+            SessionPrune.isCacheCold(model, lastFinished.time.completed) &&
+            contextTokens(lastFinished.tokens) >= COLD_RESUME_MIN_TOKENS
+          ) {
+            const rebuiltFromCold = yield* rebuildFromCheckpoint({
+              sessionID,
+              msgs,
+              agentID: lastUser.agentID,
+              agent: lastUser.agent,
+              model: { providerID: model.providerID, id: model.id },
+            }).pipe(Effect.catch(() => Effect.succeed(false)))
+            if (rebuiltFromCold) {
+              yield* slog.info("cache cold on resume; rebuilt from the checkpoint", {
+                sessionID,
+                agentID: lastUser.agentID,
+                tokens: contextTokens(lastFinished.tokens),
+              })
+              skipOverflowCheck = true
+              continue
+            }
           }
 
           if (

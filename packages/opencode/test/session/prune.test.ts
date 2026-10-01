@@ -708,3 +708,32 @@ describe("defaultThresholdsFor", () => {
     expect(defaultThresholdsFor(1_000_000)).toEqual(["40%", "60%", "80%"])
   })
 })
+
+describe("isCacheCold", () => {
+  // Two consumers now depend on this ONE answer: prune (may large tool outputs be
+  // stripped) and the cold-resume rebuild in prompt.ts (is re-sending the transcript
+  // about to cost full price). A second copy of the predicate would be a second place
+  // for the TTL to drift, so it is exported and pinned here.
+  const model = { cacheTTL: undefined } as unknown as Provider.Model
+
+  test("defaults to a five-minute TTL when the catalog says nothing", () => {
+    // The measured jump is between the 2-5 min and 5-15 min buckets, so 300_000 is the
+    // number the data supports rather than a guess.
+    expect(SessionPrune.isCacheCold(model, Date.now() - 299_000)).toBe(false)
+    expect(SessionPrune.isCacheCold(model, Date.now() - 301_000)).toBe(true)
+  })
+
+  test("honours an explicit cacheTTL over the default", () => {
+    const short = { cacheTTL: 1_000 } as unknown as Provider.Model
+    expect(SessionPrune.isCacheCold(short, Date.now() - 2_000)).toBe(true)
+    const long = { cacheTTL: 3_600_000 } as unknown as Provider.Model
+    expect(SessionPrune.isCacheCold(long, Date.now() - 2_000)).toBe(false)
+  })
+
+  test("an unknown model or a session that never ran is cold", () => {
+    // Both mean "there is no cache to protect", which is the answer each caller acts on:
+    // prune may strip, and a rebuild loses nothing.
+    expect(SessionPrune.isCacheCold(undefined, Date.now())).toBe(true)
+    expect(SessionPrune.isCacheCold(model, undefined)).toBe(true)
+  })
+})

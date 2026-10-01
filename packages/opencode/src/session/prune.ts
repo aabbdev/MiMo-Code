@@ -47,7 +47,18 @@ export function defaultThresholdsFor(window: number): readonly string[] {
   return ["40%", "60%", "80%"]
 }
 
-function isCacheCold(model?: Provider.Model, lastAssistantTime?: number): boolean {
+/**
+ * Has the provider's prompt cache for this session expired?
+ *
+ * Exported because it is one fact with more than one consequence, and a second copy of
+ * the predicate is a second place for the TTL to drift. Prune uses it to decide whether
+ * large tool outputs may be stripped; the cold-resume rebuild in `prompt.ts` uses it to
+ * decide whether re-sending the transcript is about to cost full price. Both need the
+ * SAME answer to "is there a cache left to protect", and the measurement that set the
+ * 5-minute default (a call resumed after 5-15 min of idle re-reads 89x more uncached
+ * than one made within seconds) applies to both.
+ */
+export function isCacheCold(model?: Provider.Model, lastAssistantTime?: number): boolean {
   if (!model) return true
   const ttl = model.cacheTTL ?? DEFAULT_CACHE_TTL
   if (!lastAssistantTime) return true
