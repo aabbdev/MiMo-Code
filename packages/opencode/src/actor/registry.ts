@@ -16,7 +16,8 @@ import type {
 } from "./schema"
 import { deriveLiveness, DEFAULT_LIVENESS_ABANDON_MS } from "./schema"
 import * as Events from "./events"
-import { SYSTEM_SPAWNED_AGENT_TYPES } from "@/agent/config"
+import { SYSTEM_SPAWNED_AGENT_TYPES, isDelegatedWorker } from "@/agent/config"
+import type { Info } from "@/agent/agent"
 import { randomUUID } from "node:crypto"
 
 const STUCK_THRESHOLD_MS = 5 * 60 * 1000 // 5 minutes
@@ -104,7 +105,11 @@ export interface Interface {
   readonly renderForAgent: (sessionID: SessionID) => Effect.Effect<string>
   readonly agentTypeFor: (sessionID: SessionID, actorID: string) => Effect.Effect<string>
   readonly isSystemSpawned: (sessionID: SessionID, actorID: string) => Effect.Effect<boolean>
-  readonly servesCheckpoint: (sessionID: SessionID, actorID: string | undefined) => Effect.Effect<boolean>
+  readonly servesCheckpoint: (
+    sessionID: SessionID,
+    actorID: string | undefined,
+    agent?: Pick<Info, "name" | "mode">,
+  ) => Effect.Effect<boolean>
   readonly allocateActorID: (sessionID: SessionID, agentType: string) => Effect.Effect<string>
 }
 
@@ -410,6 +415,7 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
     const servesCheckpoint = Effect.fn("ActorRegistry.servesCheckpoint")(function* (
       sessionID: SessionID,
       actorID: string | undefined,
+      agent?: Pick<Info, "name" | "mode">,
     ) {
       // No agentID (or literal "main") → main runLoop. Fail open: main and peer
       // must never silently lose checkpoints / memory instructions. "main" has no
@@ -420,6 +426,14 @@ export const layer: Layer.Layer<Service, never, Bus.Service> = Layer.effect(
       const actor = yield* get(sessionID, actorID)
       if (!actor) return true
       if (SYSTEM_SPAWNED_AGENT_TYPES.has(actor.agent)) return false
+      // Delegated worker, keyed on the AGENT's declared mode — not on the spawn mode.
+      // The spawn-mode proxy (`actor.mode !== "subagent"`) inverts the moment a
+      // subagent is spawned as a peer (its own session): a peer-routed general would
+      // then pass this gate and fire checkpoint/memory machinery for a delegated
+      // slice. `agent` is supplied by callers that can resolve the definition; when
+      // absent, the row's spawn mode is the documented fallback and preserves
+      // today's behaviour until every caller resolves.
+      if (agent) return !isDelegatedWorker(agent)
       return actor.mode !== "subagent"
     })
 

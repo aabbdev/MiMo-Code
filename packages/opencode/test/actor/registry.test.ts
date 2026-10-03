@@ -734,6 +734,43 @@ describe("ActorRegistry", () => {
   })
 
   describe("servesCheckpoint", () => {
+    test("a peer-routed delegated worker does NOT serve, even with a peer row", async () => {
+      // The inversion this pins: under peer spawning a subagent registers with
+      // mode:"peer", so the row-mode proxy (`mode !== "subagent"`) would pass it and
+      // fire checkpoint/memory machinery for a delegated slice. The gate must key on
+      // the agent's declared mode, which the caller resolves and passes.
+      await using tmp = await tmpdir({ git: true })
+      await withRegistry(tmp.path, async (rt) => {
+        const session = await rt.runPromise(Session.Service.use((svc) => svc.create()))
+        await rt.runPromise(
+          ActorRegistry.Service.use((svc) =>
+            svc.register({
+              sessionID: session.id,
+              actorID: "case-peer-general",
+              mode: "peer",
+              agent: "general",
+              description: "peer-routed general",
+              contextMode: "none",
+              background: true,
+              lifecycle: "session" as never,
+            }),
+          ),
+        )
+        const byAgent = await rt.runPromise(
+          ActorRegistry.Service.use((svc) =>
+            svc.servesCheckpoint(session.id, "case-peer-general", { name: "general", mode: "subagent" }),
+          ),
+        )
+        expect(byAgent).toBe(false)
+        // And the documented fallback: without the agent Info the row's spawn mode
+        // decides — which is exactly the case this gate must stop trusting alone.
+        const byRow = await rt.runPromise(
+          ActorRegistry.Service.use((svc) => svc.servesCheckpoint(session.id, "case-peer-general")),
+        )
+        expect(byRow).toBe(true)
+      })
+    })
+
     test("true for undefined actorID (main runLoop)", async () => {
       await using tmp = await tmpdir({ git: true })
       await withRegistry(tmp.path, async (rt) => {

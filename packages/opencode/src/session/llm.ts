@@ -357,8 +357,12 @@ const live: Layer.Layer<
       // likewise are not. Shares the exact `servesCheckpoint` judgement with
       // SessionPrune.fireCheckpoints so "who owns a checkpoint" and "who is
       // taught about memory" cannot drift apart on the actor axis.
+      // `input.agent` is the full definition the request is built for, so the
+      // delegated-worker exclusion keys on the AGENT's declared mode rather than on
+      // the spawn mode — the proxy that inverts once a subagent is spawned as a peer.
       const servesCheckpoint =
-        !input.ephemeral && (yield* actorReg.servesCheckpoint(SessionID.make(input.sessionID), input.agentID))
+        !input.ephemeral &&
+        (yield* actorReg.servesCheckpoint(SessionID.make(input.sessionID), input.agentID, input.agent))
 
       // replace-agent replaces the PRIMARY line's base prompt with a session-level
       // system (desktop execution-profile base). It is a main/peer concern: a

@@ -104,3 +104,21 @@ export function decideAskRouting(input: {
   }
   return { interactive: !input.askActor?.background }
 }
+
+/**
+ * Whether an actor is a DELEGATED WORKER rather than a primary agent of its session.
+ *
+ * This is a property of the AGENT's declared mode, NOT of the spawn shape, and the
+ * distinction is about to matter: peer spawning (a subagent in its own session)
+ * removes the `mode !== "subagent"` proxy every current gate leans on — a peer-routed
+ * subagent registers as a peer, so a gate keyed on the spawn mode inverts and fires
+ * checkpoint/memory machinery for a delegated slice. Gates that must not fire for a
+ * delegated worker ask THIS, keyed on the agent definition.
+ *
+ * Fail OPEN: an unresolvable agent is not treated as delegated, so every existing
+ * caller keeps today's behaviour on an unknown name.
+ */
+export function isDelegatedWorker(agent: Pick<Info, "name" | "mode"> | undefined) {
+  if (!agent) return false
+  return agent.mode === "subagent"
+}

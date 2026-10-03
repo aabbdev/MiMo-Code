@@ -4848,6 +4848,9 @@ NOTE: At any point in time through this workflow you should feel free to ask the
                 tokens: lastFinished.tokens,
                 promptOps: fireOps,
                 agentID: lastUser.agentID,
+                // The turn's agent definition: the delegated-worker exclusion must
+                // key on the agent's declared mode, not on the spawn mode.
+                agent,
                 writerModel: yield* resolveWriterModel(model),
               })
               .pipe(Effect.ignore)

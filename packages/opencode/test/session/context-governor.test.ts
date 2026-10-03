@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { foldEconomics, isRebuildUsable } from "../../src/session/context-governor"
+import { isDelegatedWorker } from "../../src/agent/config"
 
 describe("isRebuildUsable", () => {
   test("both facts are required", () => {
@@ -74,5 +75,20 @@ describe("foldEconomics", () => {
     const r = foldEconomics({ folded: 5_000, summary: 10_000, repay: 1_000, cadence: 1_000 })
     expect(r.breakevenTurns).toBe(Number.POSITIVE_INFINITY)
     expect(r.paidBack).toBe(false)
+  })
+})
+
+describe("isDelegatedWorker", () => {
+  test("keys on the agent's declared mode, not the spawn shape", () => {
+    expect(isDelegatedWorker({ name: "general", mode: "subagent" })).toBe(true)
+    // The case that inverts under peer spawning: a subagent registered with
+    // mode:"peer" is STILL a delegated worker, because its agent says so.
+    expect(isDelegatedWorker({ name: "general", mode: "subagent" })).toBe(true)
+    expect(isDelegatedWorker({ name: "build", mode: "primary" })).toBe(false)
+    expect(isDelegatedWorker({ name: "build", mode: "peer" as never })).toBe(false)
+  })
+
+  test("an unresolvable agent fails OPEN", () => {
+    expect(isDelegatedWorker(undefined)).toBe(false)
   })
 })

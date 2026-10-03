@@ -5,6 +5,7 @@ import { MessageV2 } from "./message-v2"
 import { Token } from "../util"
 import { Log } from "../util"
 import { Config } from "@/config"
+import type { Info } from "@/agent/agent"
 import { Flag } from "@/flag/flag"
 import { NotFoundError } from "@/storage"
 import { Effect, Layer, Context } from "effect"
@@ -160,6 +161,12 @@ export interface Interface {
     tokens: MessageV2.Assistant["tokens"]
     promptOps: ActorPromptOps
     agentID?: string
+    /**
+     * The agent definition the triggering turn was built for, so the delegated-worker
+     * exclusion keys on the agent's declared mode rather than on the spawn mode
+     * (which inverts the moment a subagent is spawned as a peer).
+     */
+    agent?: Pick<Info, "name" | "mode">
     /** Optional writer-turn model override (small/lite tier); see TryStartCheckpointWriterInput. */
     writerModel?: { providerID: string; modelID: string }
   }) => Effect.Effect<void>
@@ -254,6 +261,12 @@ export const layer: Layer.Layer<
       tokens: MessageV2.Assistant["tokens"]
       promptOps: ActorPromptOps
       agentID?: string
+      /**
+       * The agent definition the triggering turn was built for, so the delegated-worker
+       * exclusion keys on the agent's declared mode rather than on the spawn mode
+       * (which inverts the moment a subagent is spawned as a peer).
+       */
+      agent?: Pick<Info, "name" | "mode">
       writerModel?: { providerID: string; modelID: string }
     }) {
       // Checkpoint serves main/peer only; subagents use per-actor compaction
@@ -269,7 +282,7 @@ export const layer: Layer.Layer<
       // and the fork would capture the wrong parent system prompt. Unresolved actor
       // (no agentID / unregistered / race) → servesCheckpoint fails open and fires:
       // main and peer must never silently lose checkpoints.
-      if (!(yield* actorReg.servesCheckpoint(input.sessionID, input.agentID))) return
+      if (!(yield* actorReg.servesCheckpoint(input.sessionID, input.agentID, input.agent))) return
 
       // Do not consume crossed thresholds while checkpointing is disabled.
       // If an in-process embedder re-enables the flag, the next invocation must
