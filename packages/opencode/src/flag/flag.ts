@@ -445,30 +445,45 @@ export const Flag = {
   // global singleton workspace and child permission-approval routing. Enable with
   // MIMOCODE_EXPERIMENTAL_ORCHESTRATOR=true (or the umbrella MIMOCODE_EXPERIMENTAL).
   MIMOCODE_EXPERIMENTAL_ORCHESTRATOR: MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_ORCHESTRATOR"),
-  // Defaults to OFF (opt-in): actor-tool subagents run in their OWN session
-  // (peer mode) instead of sharing the parent's. Measured reason: agent
-  // alternation inside one session swaps the entire system block and tool list
-  // on every hand-off, which rewrote the prompt-cache prefix from byte 0 —
-  // 42 % of all uncached tokens on a measured three-day corpus, ~$11 of a $23
-  // bill. The peer path already exists (spawnPeer creates the child session
-  // with parent linkage and registers it), so this flag flips the actor tool's
-  // spawn and repairs the gates that assumed the shared shape.
+  // DEFAULT ON — actor-tool subagents run in their OWN session (peer mode) instead
+  // of sharing the parent's. Set MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT=false to return
+  // to the shared-session shape.
   //
-  // KNOWN GAPS under this flag, stated rather than hidden: (1) the parent's
-  // cost readouts do not aggregate a peer child's spend (session.totalCost sums
-  // by session_id); (2) cancel cascade does not traverse peer grandchildren
-  // (listByParent filters session_id = parent) — actor-tool spawns cannot have
-  // any, since nested delegation is prohibited; (3) the checkpoint rebuild's
-  // "Active actors" ledger lists peers via listBySession(parent), so peer rows
-  // are absent from it. The workflow and the checkpoint writer are deliberately
-  // UNAFFECTED: they spawn through their own paths with their own bookkeeping.
+  // Measured reason: agent alternation inside one session swaps the entire system
+  // block (53K <-> 70K) and the tool list on every hand-off, which rewrote the
+  // prompt-cache prefix from byte 0 — 42 % of all uncached tokens on a measured
+  // three-day corpus, ~$11 of a $23 bill. The peer path already existed (spawnPeer
+  // creates the child session with parent linkage and registers it), so the flip is
+  // the actor tool's spawn mode plus the gates that had to stop keying on the spawn
+  // shape (servesCheckpoint and the task tree now key on the agent's declared mode).
+  //
+  // KNOWN GAPS, stated rather than hidden: (1) the parent's cost readouts do not
+  // aggregate a peer child's spend (session.totalCost sums by session_id); (2) cancel
+  // cascade does not traverse peer grandchildren (listByParent filters session_id =
+  // parent) — actor-tool spawns cannot have any, since nested delegation is
+  // prohibited; (3) the checkpoint rebuild's "Active actors" ledger lists peers via
+  // listBySession(parent), so peer rows are absent from it; (4) the Subagents PANEL
+  // enumerates actors by the parent's session, so a peer child is reachable through
+  // the task card and its own session view, not yet through the panel. The workflow
+  // and the checkpoint writer are deliberately UNAFFECTED: they spawn through their
+  // own paths with their own bookkeeping.
+  //
+  // Evidence at flip time, stated exactly: the suites were run WITH the flag set
+  // (plugin 51/0, cli/tui 244/0, actor 190/0, tool 35/0, then 1446/0 across
+  // tool+plugin+cli/tui with the default flipped) — the tests pinning the
+  // shared-session shape exercise actor.spawn/registry.register directly and pin the
+  // former default path, which this flag no longer alters. What is NOT yet measured
+  // is the cost effect on a real delegating session: `mimo debug cache-report` is the
+  // instrument, and a collapse of the prefix-rotation bucket confirms this default
+  // while a rise of the cold-resume bucket from misdirected journals would argue for
+  // the opt-out. This default was set by decision on that basis, not on a completed
+  // measurement.
+  //
   // A GETTER, not a plain property: the other experimental switches evaluate at
   // module load, which makes them impossible to flip from a test that has already
-  // imported the module — and a flag whose value cannot be observed after import is
-  // a flag the test suite can only trust blindly. Read per access like the
-  // working-set budget.
+  // imported the module. Read per access like the working-set budget.
   get MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT() {
-    return MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT")
+    return !falsy("MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT")
   },
   // Defaults to OFF (opt-in): dynamic workflows and built-in workflows.
   // Enable with MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL=true (or the umbrella
