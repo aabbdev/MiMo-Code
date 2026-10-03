@@ -39,6 +39,8 @@ import {
 } from "ai"
 import { InstallationVersion } from "@/installation/version"
 import type { JSONObject, JSONSchema7 } from "@ai-sdk/provider"
+import { isRebuildUsable, foldEconomics, FOLD_WEIGHTS } from "./context-governor"
+import { checkpointPath } from "./checkpoint-paths"
 import { SessionPrune } from "./prune"
 import { SessionCheckpoint } from "./checkpoint"
 import { SessionCompaction } from "./compaction"
@@ -923,12 +925,13 @@ export const layer = Layer.effect(
       const hasCP = yield* checkpoint
         .hasCheckpoint(input.sessionID)
         .pipe(Effect.catch(() => Effect.succeed(false)))
-      if (!hasCP) return false
-
       const boundary = yield* checkpoint
         .lastBoundary(input.sessionID)
         .pipe(Effect.catch(() => Effect.succeed(undefined)))
-      if (!boundary) return false
+      // One shared predicate instead of two inline truths that can drift. The
+      // unconditional boundary read costs one query on the no-checkpoint path and
+      // buys the same shape on both rebuild sites.
+      if (!isRebuildUsable(hasCP, boundary)) return false
 
       const boundaryMsg = input.msgs.find((m) => m.info.id === boundary)
       const inserted = yield* checkpoint
@@ -1075,14 +1078,15 @@ export const layer = Layer.effect(
         ? yield* checkpoint.lastBoundary(input.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
         : undefined
       //    Predicate note: this MUST be the same truthiness test that
-      //    `rebuildFromCheckpoint` applies to the same value (`if (!boundary)`
-      //    at :413), NOT `boundary !== undefined`. `lastBoundary` reads a
-      //    nullable column and returned JS `null` for an unset watermark
-      //    (checkpoint.ts:1422 — its declared `MessageID | undefined` was an
-      //    unchecked cast), so `!== undefined` was true for EVERY session with a
-      //    file on disk and this guard degenerated into the bare
-      //    `hasCheckpoint` check it was written to replace.
-      if (hasCP && boundary) return "insert-failed" as const
+      //    `rebuildFromCheckpoint` applies to the same value, NOT
+      //    `boundary !== undefined`. `lastBoundary` reads a nullable column and
+      //    returned JS `null` for an unset watermark (checkpoint.ts:1422 — its
+      //    declared `MessageID | undefined` was an unchecked cast), so
+      //    `!== undefined` was true for EVERY session with a file on disk and this
+      //    guard degenerated into the bare `hasCheckpoint` check it was written to
+      //    replace. That history is why the test now lives in ONE shared predicate
+      //    (session/context-governor.ts) instead of two inline copies.
+      if (isRebuildUsable(hasCP, boundary)) return "insert-failed" as const
 
       // 3. No checkpoint → produce one on the spot. Reentrancy: the
       //    isWriterRunning probe skips a redundant request, and
@@ -4891,10 +4895,23 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               model: { providerID: model.providerID, id: model.id },
             }).pipe(Effect.catch(() => Effect.succeed(false)))
             if (rebuiltFromCold) {
+              // Report the fold economics this site can MEASURE: S is the context the
+              // fold removed, sigma the summary's own size (checkpoint bytes / 4 plus
+              // the nominal tail the rebuild preserves). T and the cadence are only
+              // observable after the next calls, so the cache report owns them; this
+              // line is the input record, not the verdict.
+              const folded = contextTokens(lastFinished.tokens)
+              const checkpointBytes = yield* Effect.promise(() =>
+                Bun.file(checkpointPath(sessionID)).stat().then((s) => s.size).catch(() => 0),
+              )
+              const summary = Math.round(checkpointBytes / FOLD_WEIGHTS.q) + 20_000
+              const economics = foldEconomics({ folded, summary, repay: summary })
               yield* slog.info("cache cold on resume; rebuilt from the checkpoint", {
                 sessionID,
                 agentID: lastUser.agentID,
-                tokens: contextTokens(lastFinished.tokens),
+                foldedTokens: folded,
+                summaryTokens: summary,
+                breakevenTurns: Math.round(economics.breakevenTurns),
               })
               skipOverflowCheck = true
               continue

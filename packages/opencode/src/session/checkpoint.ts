@@ -1331,6 +1331,15 @@ export const layer: Layer.Layer<
       // Point at the exact section that holds the body. "shown below" / "use
       // Read" both conflict with the F17 "already loaded" header that follows.
       lines.push(`Current checkpoint (${topic}) — body is in the "# Session checkpoint" section.`)
+      // Name the recovery path. The originals were never deleted — they are in the
+      // trajectory DB and `history around`/`history get` read them back, tool output
+      // included — but a capability the model is never told about is one it cannot
+      // choose. This is the moment the need is real: the rebuild just folded detail
+      // away, and this line is what turns the fold from a loss into a deferral.
+      lines.push("")
+      lines.push(
+        `Detail older than this boundary was folded, not deleted. To recover exact wording, a tool output, or the context of a decision, use \`history around <message_id>\` then \`history get part_id\`.`,
+      )
 
       return lines.join("\n")
     })
