@@ -462,8 +462,14 @@ export const Flag = {
   // "Active actors" ledger lists peers via listBySession(parent), so peer rows
   // are absent from it. The workflow and the checkpoint writer are deliberately
   // UNAFFECTED: they spawn through their own paths with their own bookkeeping.
-  MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT:
-    MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT"),
+  // A GETTER, not a plain property: the other experimental switches evaluate at
+  // module load, which makes them impossible to flip from a test that has already
+  // imported the module — and a flag whose value cannot be observed after import is
+  // a flag the test suite can only trust blindly. Read per access like the
+  // working-set budget.
+  get MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT() {
+    return MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT")
+  },
   // Defaults to OFF (opt-in): dynamic workflows and built-in workflows.
   // Enable with MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL=true (or the umbrella
   // MIMOCODE_EXPERIMENTAL flag).

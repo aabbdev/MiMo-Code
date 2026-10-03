@@ -110,6 +110,55 @@ describe("Actor tool fromExec guard", () => {
     ),
   )
 
+  it.live("peer flag: the tool spawns mode peer with the parent as the reference", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        // The flag flips exactly ONE thing — the spawn MODE the tool passes — and
+        // this test pins that it flips nothing else: sessionID stays the PARENT
+        // reference spawnPeer needs to create the child under, and the mock spawn's
+        // returned sessionId (the child) is what the tool reports.
+        const captured: SpawnInput[] = []
+        yield* installMockSpawn((input) => captured.push(input))
+        const { chat, assistant } = yield* seed()
+        const tool = yield* ActorTool
+        const def = yield* tool.init()
+
+        const prev = process.env.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT
+        process.env.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT = "true"
+        try {
+          const result = yield* def.execute(
+            {
+              operation: {
+                action: "spawn",
+                description: "peer delegation",
+                prompt: "go do something",
+                subagent_type: "general",
+              },
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          expect(captured).toHaveLength(1)
+          expect(captured[0]!.mode).toBe("peer")
+          // The parent reference is unchanged — the flag must not alter what the
+          // spawn is anchored to, only how the child session is shaped.
+          expect(captured[0]!.sessionID).toBe(chat.id)
+          expect(result.metadata.sessionId).toBe(chat.id) // mock returns input.sessionID
+        } finally {
+          if (prev === undefined) delete process.env.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT
+          else process.env.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT = prev
+        }
+      }),
+    ),
+  )
+
   it.live("primary agent calling spawn via exec is not blocked", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
