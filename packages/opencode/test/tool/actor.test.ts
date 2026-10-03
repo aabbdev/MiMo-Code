@@ -159,6 +159,51 @@ describe("Actor tool fromExec guard", () => {
     ),
   )
 
+  it.live("peer is the DEFAULT: with the env unset the tool spawns mode peer", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        // The flip (54a8b0f3) made peer the default and false the opt-out. This pins
+        // the UNSET case — the one every real session runs under — separately from
+        // the env-set test above, because a getter that read a load-time constant
+        // would satisfy that test and still not be the default.
+        const captured: SpawnInput[] = []
+        yield* installMockSpawn((input) => captured.push(input))
+        const { chat, assistant } = yield* seed()
+        const tool = yield* ActorTool
+        const def = yield* tool.init()
+
+        const prev = process.env.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT
+        delete process.env.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT
+        try {
+          yield* def.execute(
+            {
+              operation: {
+                action: "spawn",
+                description: "default-mode delegation",
+                prompt: "go do something",
+                subagent_type: "general",
+              },
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          expect(captured).toHaveLength(1)
+          expect(captured[0]!.mode).toBe("peer")
+          expect(captured[0]!.sessionID).toBe(chat.id)
+        } finally {
+          if (prev !== undefined) process.env.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT = prev
+        }
+      }),
+    ),
+  )
+
   it.live("primary agent calling spawn via exec is not blocked", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {

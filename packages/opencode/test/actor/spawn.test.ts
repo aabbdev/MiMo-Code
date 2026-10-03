@@ -355,6 +355,13 @@ describe("Actor.spawn peer mode", () => {
         const row = yield* reg.get(result.sessionID, result.actorID)
         expect(row?.mode).toBe("peer")
         expect(row?.agent).toBe("build")
+        // The parent linkage is what makes the child a DELEGATED worker everywhere
+        // else: the task tool resolves its owning tree through session.parentID,
+        // `actor send` defaults its receiver through it, and the TUI attaches to the
+        // child as a full session through the registry metadata. Without it the child
+        // is an orphan session no gate can classify.
+        const child = yield* session.get(result.sessionID)
+        expect(child.parentID).toBe(parent.id)
       }),
       { git: true, config: providerCfg },
     ),
