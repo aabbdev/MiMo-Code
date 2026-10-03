@@ -17,7 +17,7 @@ export function SubagentFooter() {
 
   const actors = createMemo(() =>
     (sync.data.actor[route.sessionID] ?? [])
-      .filter((a) => a.mode === "subagent")
+      .filter((a) => a.mode === "subagent" || a.mode === "peer")
       .toSorted((a, b) => a.time_created - b.time_created),
   )
 

@@ -480,19 +480,28 @@ export function Session() {
   })
 
   function moveFirstChild() {
-    const list = actors().filter((a) => a.mode === "subagent")
+    const list = actors().filter((a) => a.mode === "subagent" || a.mode === "peer")
     if (list.length === 0) {
       dialog.replace(() => <DialogSubagent sessionID={route.sessionID} />)
       return
     }
+    followChild(list[0])
+  }
+
+  /** Navigate to a child actor. A peer child is its OWN session — attaching to it as
+   *  a full session (no agentID) is the same shape DialogSubagent already uses. */
+  function followChild(a: { mode: string; actor_id: string; session_id: string }) {
+    if (a.mode === "peer") {
+      navigate({ type: "session", sessionID: a.session_id })
+      return
+    }
     if (fullRoute.data.type !== "session") return
-    navigate({ ...fullRoute.data, agentID: list[0].actor_id, fromWorkflowRunID: undefined })
+    navigate({ ...fullRoute.data, agentID: a.actor_id, fromWorkflowRunID: undefined })
   }
 
   function moveChild(direction: 1 | -1) {
-    const list = actors().filter((a) => a.mode === "subagent")
+    const list = actors().filter((a) => a.mode === "subagent" || a.mode === "peer")
     if (list.length === 0) return
-    if (fullRoute.data.type !== "session") return
     const cur = currentAgentID()
     const idx = list.findIndex((a) => a.actor_id === cur)
     const next =
@@ -501,7 +510,7 @@ export function Session() {
           ? 0
           : list.length - 1
         : (idx + direction + list.length) % list.length
-    navigate({ ...fullRoute.data, agentID: list[next].actor_id, fromWorkflowRunID: undefined })
+    followChild(list[next])
   }
 
   const command = useCommandDialog()
@@ -3496,6 +3505,13 @@ function Task(props: ToolProps<typeof ActorTool>) {
   })
 
   const targetBucket = createMemo(() => {
+    // A PEER subagent's messages land in its OWN session's `main` bucket (it is a
+    // full session, not an agentID slice of this one), while a shared-session
+    // subagent's messages live in THIS session under its actorId. The metadata
+    // carries both ids; the discriminator is whether the target session is this
+    // one. Without this the card scanned `message[childId][childActorId]`, which
+    // never exists, and showed zero toolcalls for every peer delegation.
+    if (targetSession() !== props.part.sessionID) return "main"
     const fromMeta = props.metadata.actorId as string | undefined
     if (fromMeta) return fromMeta
     return inputActorId() ?? "main"
