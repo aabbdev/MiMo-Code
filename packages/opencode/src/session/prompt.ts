@@ -269,14 +269,20 @@ const MAX_GOAL_REACT = 12
 const MAX_GOAL_IDLE_REACT = 2
 
 /**
- * Context size below which a cold resume is not worth rebuilding for.
+ * How many turns a cold-resume fold may need to pay back before it is refused.
  *
- * A rebuild keeps the checkpoint plus a 10-20K token tail of the transcript, so it only
- * shrinks a context that is already larger than that. Below this floor the full-price
- * re-read costs a fraction of a cent and there is nothing to trade — the transcript is
- * cheaper to keep than the summary is to substitute for it.
+ * The floor is NOT a flat token count, and the measured reason is a fold this gate
+ * actually made: a 99,735-token context was folded on resume, which `foldEconomics`
+ * (with the measured r = 0.02 cached/uncached ratio) prices at a break-even of
+ * ~110 turns — a trade the session would probably never collect. The same formula
+ * prices a 745K fold at ~10 turns, which IS worth it. So the gate asks the formula:
+ * fold only when the break-even horizon is reachable.
+ *
+ * Derived floor, from the same inputs the rebuild logs (summary = checkpoint bytes
+ * divided by the q weight, plus the nominal tail): the fold becomes worth it around
+ * a ~300K context, which is what the flat 60,000-floor was missing by 5x.
  */
-const COLD_RESUME_MIN_TOKENS = 60_000
+const FOLD_PAYBACK_HORIZON_TURNS = 30
 
 /**
  * Whether the judged turn did any work — any tool call at all.
@@ -4887,9 +4893,27 @@ NOTE: At any point in time through this workflow you should feel free to ask the
             lastFinished &&
             lastFinished.summary !== true &&
             (!lastUser.agentID || lastUser.agentID === "main") &&
-            SessionPrune.isCacheCold(model, lastFinished.time.completed) &&
-            contextTokens(lastFinished.tokens) >= COLD_RESUME_MIN_TOKENS
+            SessionPrune.isCacheCold(model, lastFinished.time.completed)
           ) {
+            const folded = contextTokens(lastFinished.tokens)
+            // The economics gate: the fold's own size determines its break-even, so
+            // measure the checkpoint here rather than reusing a flat floor.
+            const checkpointBytes = yield* Effect.promise(() =>
+              Bun.file(checkpointPath(sessionID)).stat().then((st) => st.size).catch(() => 0),
+            )
+            const summary = Math.round(checkpointBytes / FOLD_WEIGHTS.q) + 20_000
+            const economics = foldEconomics({ folded, summary, repay: summary })
+            if (economics.breakevenTurns > FOLD_PAYBACK_HORIZON_TURNS) {
+              yield* slog.info("cache cold on resume; fold refused by fold economics", {
+                sessionID,
+                agentID: lastUser.agentID,
+                foldedTokens: folded,
+                summaryTokens: summary,
+                breakevenTurns: Math.round(economics.breakevenTurns),
+              })
+              skipOverflowCheck = false
+              // fall through: the transcript is kept and the ordinary checks run
+            } else {
             const rebuiltFromCold = yield* rebuildFromCheckpoint({
               sessionID,
               msgs,
@@ -4898,17 +4922,10 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               model: { providerID: model.providerID, id: model.id },
             }).pipe(Effect.catch(() => Effect.succeed(false)))
             if (rebuiltFromCold) {
-              // Report the fold economics this site can MEASURE: S is the context the
-              // fold removed, sigma the summary's own size (checkpoint bytes / 4 plus
-              // the nominal tail the rebuild preserves). T and the cadence are only
+              // Report the fold economics the GATE just measured above — same inputs,
+              // re-read here only to avoid a second stat. T and the cadence are only
               // observable after the next calls, so the cache report owns them; this
               // line is the input record, not the verdict.
-              const folded = contextTokens(lastFinished.tokens)
-              const checkpointBytes = yield* Effect.promise(() =>
-                Bun.file(checkpointPath(sessionID)).stat().then((s) => s.size).catch(() => 0),
-              )
-              const summary = Math.round(checkpointBytes / FOLD_WEIGHTS.q) + 20_000
-              const economics = foldEconomics({ folded, summary, repay: summary })
               yield* slog.info("cache cold on resume; rebuilt from the checkpoint", {
                 sessionID,
                 agentID: lastUser.agentID,
@@ -4918,6 +4935,7 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               })
               skipOverflowCheck = true
               continue
+            }
             }
           }
 
