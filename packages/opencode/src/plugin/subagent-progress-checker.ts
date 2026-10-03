@@ -138,7 +138,11 @@ export async function SubagentProgressCheckerPlugin(pluginInput: PluginInput): P
         // sync fast-outs above so non-task-bound subagents don't pay a config read.
         if (!(await memoryWriteEnabled(pluginInput.client))) return
 
-        const sessionID = input.sessionID as SessionID
+        // The journal belongs to the OWNING session: the checkpoint progress
+        // reconciler scans the PARENT's task memory, and under peer spawning the
+        // subagent's own session is a child — keying on input.sessionID would land
+        // the journal where the reconciler never looks.
+        const sessionID = (input.parentSessionID ?? input.sessionID) as SessionID
         const filePath = progressPath(sessionID, taskId)
 
         let body: string | undefined

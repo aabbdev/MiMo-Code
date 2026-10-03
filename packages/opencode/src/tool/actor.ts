@@ -1,4 +1,5 @@
 import * as Tool from "./tool"
+import { Flag } from "@/flag/flag"
 import { RecoverableError } from "./recoverable"
 import DESCRIPTION from "./actor.txt"
 import DESCRIPTION_CHECKPOINT from "./actor.checkpoint.txt"
@@ -585,7 +586,18 @@ export const ActorTool = Tool.define(
               new Error("Inbox service unavailable — Inbox.layer must be running for the actor tool to send messages"),
             )
           }
-          const targetSid = op.to_session_id !== undefined ? SessionID.make(op.to_session_id) : ctx.sessionID
+          // Under peer mode a subagent runs in its OWN session, so the parent —
+          // where the delegating actor is registered — is no longer ctx.sessionID.
+          // Default to the running session's parent when this session has one, so
+          // `actor send` reaches the delegator without the model having to know the
+          // topology; an explicit to_session_id still wins.
+          let targetSid = op.to_session_id !== undefined ? SessionID.make(op.to_session_id) : ctx.sessionID
+          if (op.to_session_id === undefined && Flag.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT) {
+            const self = yield* sessions
+              .get(ctx.sessionID)
+              .pipe(Effect.catch(() => Effect.succeed(undefined)))
+            if (self?.parentID) targetSid = self.parentID as SessionID
+          }
           const sendResult = yield* inboxSvc
             .send({
               receiverSessionID: targetSid,
@@ -802,8 +814,13 @@ export const ActorTool = Tool.define(
         // the agent loop, and sending inbox notifications on terminal — replacing
         // the legacy session.create + manual fork path that lived here pre-Task-29.
         const actor = yield* requireActor()
+        // Peer mode (MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT): the subagent runs in its
+        // OWN session so the parent's prompt-cache prefix never alternates between
+        // agent shapes — measured at 42 % of all uncached tokens. spawnPeer creates
+        // the child session with parent linkage and registers it; ctx.sessionID is
+        // the PARENT reference spawnPeer needs to create that child under.
         const spawnResult = yield* actor.spawn({
-          mode: "subagent",
+          mode: Flag.MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT ? "peer" : "subagent",
           sessionID: ctx.sessionID,
           agentType: next.name,
           description: op.description,

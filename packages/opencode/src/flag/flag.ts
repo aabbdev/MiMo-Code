@@ -445,6 +445,25 @@ export const Flag = {
   // global singleton workspace and child permission-approval routing. Enable with
   // MIMOCODE_EXPERIMENTAL_ORCHESTRATOR=true (or the umbrella MIMOCODE_EXPERIMENTAL).
   MIMOCODE_EXPERIMENTAL_ORCHESTRATOR: MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_ORCHESTRATOR"),
+  // Defaults to OFF (opt-in): actor-tool subagents run in their OWN session
+  // (peer mode) instead of sharing the parent's. Measured reason: agent
+  // alternation inside one session swaps the entire system block and tool list
+  // on every hand-off, which rewrote the prompt-cache prefix from byte 0 —
+  // 42 % of all uncached tokens on a measured three-day corpus, ~$11 of a $23
+  // bill. The peer path already exists (spawnPeer creates the child session
+  // with parent linkage and registers it), so this flag flips the actor tool's
+  // spawn and repairs the gates that assumed the shared shape.
+  //
+  // KNOWN GAPS under this flag, stated rather than hidden: (1) the parent's
+  // cost readouts do not aggregate a peer child's spend (session.totalCost sums
+  // by session_id); (2) cancel cascade does not traverse peer grandchildren
+  // (listByParent filters session_id = parent) — actor-tool spawns cannot have
+  // any, since nested delegation is prohibited; (3) the checkpoint rebuild's
+  // "Active actors" ledger lists peers via listBySession(parent), so peer rows
+  // are absent from it. The workflow and the checkpoint writer are deliberately
+  // UNAFFECTED: they spawn through their own paths with their own bookkeeping.
+  MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT:
+    MIMOCODE_EXPERIMENTAL || truthy("MIMOCODE_EXPERIMENTAL_PEER_SUBAGENT"),
   // Defaults to OFF (opt-in): dynamic workflows and built-in workflows.
   // Enable with MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL=true (or the umbrella
   // MIMOCODE_EXPERIMENTAL flag).

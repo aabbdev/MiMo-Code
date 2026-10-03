@@ -828,6 +828,18 @@ export const layer = Layer.effect(
             if (input.forkContext) {
               forkContexts.set(forkContextKey(child.id, child.id), input.forkContext) // peer's actorID === child.id
             }
+            // The completion gate and the return-format contract are spawn-mode
+            // invariant: spawnSubagent injects RETURN_FORMAT_INSTRUCTION for
+            // gate-eligible agents, and a peer-routed subagent is the SAME delegated
+            // worker with a different session topology. Omitting it here silently
+            // dropped the contract the parent relies on (inventory break #9).
+            const peerAgentInfo = yield* agents.get(input.agentType)
+            const gateEligible =
+              peerAgentInfo?.mode === "subagent" &&
+              (peerAgentInfo.completionGate === true ||
+                (!peerAgentInfo.prompt && input.agentType !== "checkpoint-writer"))
+            const taskWithFormat = gateEligible ? input.task + RETURN_FORMAT_INSTRUCTION : input.task
+
             const { fiber, outcome } = yield* forkWork({
               execution,
               sessionID: child.id,
@@ -835,15 +847,17 @@ export const layer = Layer.effect(
               parentActorID: input.parentActorID,
               actorID: child.id,
               agentType: input.agentType,
-              task: input.task,
+              task: taskWithFormat,
               description: input.description,
               background: input.background,
               model: input.model,
               lifecycle: input.lifecycle ?? "persistent",
               task_id: input.task_id,
+              gateEligible,
               format: input.format,
               ...(instanceRef ? { instanceRef } : {}),
             })
+            if (input.onReady) yield* Effect.ignore(input.onReady({ actorID: child.id, sessionID: child.id }))
             if (!input.background) yield* Fiber.join(fiber).pipe(Effect.ignore)
             return { actorID: child.id, sessionID: child.id, outcome }
           }),
