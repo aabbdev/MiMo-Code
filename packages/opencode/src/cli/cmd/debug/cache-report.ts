@@ -82,6 +82,23 @@ export const CacheReportCommand = cmd({
         cost: number | null
       }>
 
+      // The wire-churn census: how many profile keys a session produced against how
+      // many DISTINCT (system, tools) byte-pairs. The gap is churn on the harness's
+      // OWN key with no byte change — the part of a prefix-rotation that is ours to
+      // fix, as opposed to provider-side eviction.
+      const churn: Record<string, { wirePairs: number; profiles: number }> = {}
+      const snaps = db
+        .query(
+          `SELECT session_id AS sid, system_hash AS sh, tools_hash AS th, COUNT(DISTINCT profile_key) AS profiles
+           FROM session_prefix_snapshot GROUP BY session_id, system_hash, tools_hash`,
+        )
+        .all() as Array<{ sid: string; sh: string; th: string; profiles: number }>
+      for (const r of snaps) {
+        const c = (churn[r.sid] ??= { wirePairs: 0, profiles: 0 })
+        c.wirePairs += 1
+        c.profiles += r.profiles
+      }
+
       const report = cacheReport({
         rows: rows
           .filter((r) => !args.session || r.sid === args.session)
@@ -96,6 +113,7 @@ export const CacheReportCommand = cmd({
             cost: r.cost ?? 0,
           })),
         ttl: args.ttl,
+        churn,
       })
 
       if (args.json) console.log(JSON.stringify(report, null, 2))

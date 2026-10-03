@@ -163,6 +163,21 @@ CRITICAL CONSTRAINTS:
 
 8. After turn 2's Edits, your response is complete. Do not summarize what you wrote.
 
+9. TASK-STATE FIDELITY — two incident classes measured in production by the acp-kernel
+   compression rules (their #309 and #442), both of which this harness can reproduce:
+
+   - A user request that is NEITHER completed NOR superseded at the end of the range is
+     an OPEN OBJECTIVE. Record it in §2 with its message id (mNNNNN) and carry it forward
+     at every later checkpoint until it is completed or superseded. Losing it changes the
+     task itself; it is the last thing to drop and the first thing to restore.
+   - Recorded task state is HISTORY, never a live instruction: write
+     "TASK AS OF THIS BLOCK: ..." — a later reader must treat it as settled context, not
+     something to re-execute. A state line carried as a live directive has caused loop
+     relapses.
+   - Quote a user message verbatim ONLY with its message ref (mNNNNN). Without one,
+     paraphrase and label it "(paraphrased)". Never present a reconstructed or
+     half-remembered phrase as a verbatim quote.
+
 EDGE CASES:
 
 - If §1 already has a block-quoted user request that's still valid (user hasn't issued a new request since), keep it. Don't replace with a stale paraphrase.

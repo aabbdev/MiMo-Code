@@ -87,6 +87,13 @@ export interface OffenderLine {
 export interface CacheReport {
   calls: number
   sessions: number
+  /**
+   * Per-session wire-churn census, when the caller supplied one. `redundant` is the
+   * number of profile keys that map to an already-seen (system, tools) pair — keys
+   * that rotated WITHOUT changing a byte on the wire, so every one of them is a
+   * prefix the harness rebuilt for nothing.
+   */
+  churn: Array<{ sessionID: string; wirePairs: number; profiles: number; redundant: number }>
   span: { from: number; to: number } | undefined
   totalUncached: number
   totalCached: number
@@ -104,6 +111,14 @@ export interface CacheReportInput {
   rows: CacheReportRow[]
   /** Cache TTL in ms; calls idle longer than this are bucketed cold-resume. */
   ttl?: number
+  /**
+   * Optional wire-churn census per session, from the prefix-snapshot table:
+   * how many DISTINCT (system, tools) byte-pairs a session produced, against how
+   * many profile keys. The difference is churn on the harness's OWN key without a
+   * byte change — measured at 43 of 69 profiles on one real session — which is the
+   * part of a prefix-rotation the harness can fix without touching the provider.
+   */
+  churn?: Record<string, { wirePairs: number; profiles: number }>
 }
 
 export function cacheReport(input: CacheReportInput): CacheReport {
@@ -214,9 +229,19 @@ export function cacheReport(input: CacheReportInput): CacheReport {
 
   offenders.sort((a, b) => b.uncached - a.uncached)
 
+  const churn = Object.entries(input.churn ?? {})
+    .map(([sessionID, c]) => ({
+      sessionID,
+      wirePairs: c.wirePairs,
+      profiles: c.profiles,
+      redundant: c.profiles - c.wirePairs,
+    }))
+    .sort((a, b) => b.redundant - a.redundant)
+
   return {
     calls: input.rows.length,
     sessions: bySession.size,
+    churn,
     span: input.rows.length > 0 ? { from: first, to: last } : undefined,
     totalUncached,
     totalCached,
@@ -242,6 +267,14 @@ export function renderCacheReport(report: CacheReport, options: { limit?: number
     lines.push(
       line.bucket.padEnd(16) + String(line.calls).padStart(6) + Token.format(line.uncached).padStart(10) + pct(line.share).padStart(7),
     )
+  }
+  if (report.churn.some((c) => c.redundant > 0)) {
+    lines.push("")
+    lines.push("wire churn (profile keys vs distinct system+tools bytes):")
+    for (const c of report.churn.slice(0, 5))
+      lines.push(
+        `  ${c.sessionID.slice(0, 22)} profiles=${String(c.profiles).padStart(4)} wirePairs=${String(c.wirePairs).padStart(4)} redundant=${String(c.redundant).padStart(4)}`,
+      )
   }
   lines.push("")
   lines.push(`verdict: ${report.verdict.state.toUpperCase()} — ${report.verdict.reason}`)
