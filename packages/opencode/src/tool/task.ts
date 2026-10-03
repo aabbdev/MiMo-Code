@@ -5,6 +5,9 @@ import { tokenize } from "./shell-tokenize"
 import z from "zod"
 import { Effect } from "effect"
 import { TaskRegistry } from "@/task/registry"
+import { resolveTaskSessionID } from "@/session/context-governor"
+import { Session } from "@/session"
+import { Agent } from "@/agent/agent"
 import type { SessionID } from "../session/schema"
 
 const KNOWN_VERBS = [
@@ -326,14 +329,42 @@ function arityError(verb: string, expected: string, args: string[], line: number
   })
 }
 
-export const TaskTool = Tool.define<typeof parameters, Metadata, TaskRegistry.Service>(
+export const TaskTool = Tool.define<
+  typeof parameters,
+  Metadata,
+  TaskRegistry.Service | Session.Service | Agent.Service
+>(
   id,
   Effect.gen(function* () {
     const reg = yield* TaskRegistry.Service
+    const sessions = yield* Session.Service
+    const agents = yield* Agent.Service
 
     const run = Effect.fn("TaskTool.execute")(function* (input: TaskInput, ctx: Tool.Context<Metadata>) {
       const op = input.operation
-      const sessionID = (op.session_id || ctx.sessionID) as SessionID
+      /**
+       * The task tree belongs to the session that OWNS the work. A delegated worker
+       * running in its own session (peer mode) must address the OWNING session's
+       * tree — the spawn bound its task_id there and the completion gate reconciles
+       * against it — while today a subagent shares the parent session, so
+       * ctx.sessionID already IS that tree and nothing changes for it.
+       *
+       * Deliberately narrow, so no other child-session shape shifts:
+       * - an explicit `op.session_id` always wins (unchanged);
+       * - only a DELEGATED worker is redirected, keyed on the agent's declared mode
+       *   via the same predicate servesCheckpoint uses;
+       * - system-spawned agents (checkpoint-writer/dream/distill) are excluded: they
+       *   run in an Axis-A child deliberately and address their own store today,
+       *   even though their declared mode is "subagent".
+       */
+      const info = yield* agents.get(ctx.agent).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const self = yield* sessions.get(ctx.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined)))
+      const sessionID = resolveTaskSessionID({
+        explicit: op.session_id,
+        sessionID: ctx.sessionID,
+        agent: info,
+        self,
+      }) as SessionID
 
       if (op.action === "create") {
         const t = yield* reg.create({

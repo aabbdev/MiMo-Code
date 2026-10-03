@@ -1,3 +1,5 @@
+import { SYSTEM_SPAWNED_AGENT_TYPES, isDelegatedWorker } from "@/agent/config"
+import type { Info } from "@/agent/agent"
 /**
  * Pure predicates for the context-governor decision — the facts every rebuild path
  * must agree on.
@@ -103,4 +105,36 @@ export function foldEconomics(input: FoldEconomicsInput): FoldEconomics {
     breakevenTurns,
     paidBack: input.cadence === undefined ? undefined : input.cadence >= breakevenTurns,
   }
+}
+
+/**
+ * Which session's task tree a `task` tool call addresses.
+ *
+ * The tree belongs to the session that OWNS the work. A delegated worker running in
+ * its own session (peer mode) must address the OWNING session's tree — the spawn
+ * bound its `task_id` there and the completion gate reconciles against it — while
+ * today a subagent shares the parent session, so its ctx.sessionID already IS that
+ * tree and nothing changes for it.
+ *
+ * Deliberately narrow, so no other child-session shape shifts:
+ * - an explicit `session_id` argument always wins (unchanged);
+ * - only a DELEGATED worker is redirected, keyed on the agent's declared mode via
+ *   the same predicate `servesCheckpoint` uses;
+ * - system-spawned agents (checkpoint-writer/dream/distill) are excluded: they run
+ *   in an Axis-A child deliberately and address their own store today, even though
+ *   their declared mode is "subagent".
+ *
+ * Pure: takes the observed facts (the explicit argument, the running session, the
+ * agent definition, the session row) so the gate is testable without a tool harness.
+ */
+export function resolveTaskSessionID(input: {
+  explicit?: string
+  sessionID: string
+  agent?: Pick<Info, "name" | "mode">
+  self?: { parentID?: string | null }
+}): string {
+  if (input.explicit) return input.explicit
+  if (!input.agent || !isDelegatedWorker(input.agent)) return input.sessionID
+  if (SYSTEM_SPAWNED_AGENT_TYPES.has(input.agent.name)) return input.sessionID
+  return input.self?.parentID ?? input.sessionID
 }

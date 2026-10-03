@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { foldEconomics, isRebuildUsable } from "../../src/session/context-governor"
+import { foldEconomics, isRebuildUsable, resolveTaskSessionID } from "../../src/session/context-governor"
 import { isDelegatedWorker } from "../../src/agent/config"
 
 describe("isRebuildUsable", () => {
@@ -90,5 +90,42 @@ describe("isDelegatedWorker", () => {
 
   test("an unresolvable agent fails OPEN", () => {
     expect(isDelegatedWorker(undefined)).toBe(false)
+  })
+})
+
+describe("resolveTaskSessionID", () => {
+  const PARENT = "ses_parent", CHILD = "ses_child"
+  const general = { name: "general", mode: "subagent" as const }
+  const writer = { name: "checkpoint-writer", mode: "subagent" as const }
+  const build = { name: "build", mode: "primary" as const }
+  const child = { parentID: PARENT }
+
+  test("an explicit session_id always wins", () => {
+    expect(resolveTaskSessionID({ explicit: "ses_x", sessionID: CHILD, agent: general, self: child })).toBe("ses_x")
+  })
+
+  test("a delegated worker in its own session addresses the OWNING tree", () => {
+    expect(resolveTaskSessionID({ sessionID: CHILD, agent: general, self: child })).toBe(PARENT)
+  })
+
+  test("a shared-session subagent keeps today's behaviour (no parent to redirect to)", () => {
+    // Today a subagent shares the parent session, so ctx.sessionID IS the tree; the
+    // rule must not move it.
+    expect(resolveTaskSessionID({ sessionID: PARENT, agent: general, self: { parentID: null } })).toBe(PARENT)
+  })
+
+  test("system-spawned agents keep their own store, even with a parent", () => {
+    // The checkpoint writer runs in an Axis-A child deliberately and addresses its
+    // own store today; its declared mode is "subagent", so the delegated rule alone
+    // would move it. The exclusion is what keeps its behaviour unchanged.
+    expect(resolveTaskSessionID({ sessionID: CHILD, agent: writer, self: child })).toBe(CHILD)
+  })
+
+  test("a primary agent never redirects", () => {
+    expect(resolveTaskSessionID({ sessionID: CHILD, agent: build, self: child })).toBe(CHILD)
+  })
+
+  test("an unresolvable agent keeps the running session", () => {
+    expect(resolveTaskSessionID({ sessionID: CHILD, self: child })).toBe(CHILD)
   })
 })

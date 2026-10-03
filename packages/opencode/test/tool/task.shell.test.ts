@@ -4,9 +4,12 @@ import { Agent } from "../../src/agent/agent"
 import { Truncate } from "../../src/tool"
 import { TaskTool } from "../../src/tool/task"
 import { TaskRegistry } from "../../src/task/registry"
+import { Session } from "../../src/session"
 
 const runtime = ManagedRuntime.make(
-  Layer.mergeAll(Truncate.defaultLayer, Agent.defaultLayer, TaskRegistry.defaultLayer),
+  // Session.Service: the task tool now resolves the OWNING session for a
+// delegated worker running in its own session (peer mode), so it requires it.
+Layer.mergeAll(Truncate.defaultLayer, Agent.defaultLayer, TaskRegistry.defaultLayer, Session.defaultLayer),
 )
 
 async function parse(script: string) {
