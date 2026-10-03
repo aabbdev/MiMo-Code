@@ -40,7 +40,8 @@ import {
 import { InstallationVersion } from "@/installation/version"
 import type { JSONObject, JSONSchema7 } from "@ai-sdk/provider"
 import { isRebuildUsable, foldEconomics, FOLD_WEIGHTS } from "./context-governor"
-import { checkpointPath } from "./checkpoint-paths"
+import { checkpointPath, metaDir } from "./checkpoint-paths"
+import { appendFold, loadFoldLedger, saveFoldLedger } from "./fold-ledger"
 import { SessionPrune } from "./prune"
 import { SessionCheckpoint } from "./checkpoint"
 import { SessionCompaction } from "./compaction"
@@ -4922,16 +4923,32 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               model: { providerID: model.providerID, id: model.id },
             }).pipe(Effect.catch(() => Effect.succeed(false)))
             if (rebuiltFromCold) {
-              // Report the fold economics the GATE just measured above — same inputs,
-              // re-read here only to avoid a second stat. T and the cadence are only
-              // observable after the next calls, so the cache report owns them; this
-              // line is the input record, not the verdict.
+              // Record the fold. This is the block model's first increment: every
+              // fold becomes an addressable ledger entry (range, tokens, break-even,
+              // generation), which is what makes the economics per fold observable
+              // and gives the multi-fold view its data. The ledger never blocks the
+              // rebuild — a ledger failure logs and moves on, the checkpoint is the
+              // source of truth.
+              const ledgerDir = metaDir(sessionID)
+              const ledger = yield* Effect.promise(() => loadFoldLedger(ledgerDir))
+              const lastMsgID = [...msgs].reverse().find((m) => m.info.role === "assistant")?.info.id
+              const recorded = appendFold(ledger, {
+                firstMessageID: msgs[0]?.info.id ?? "",
+                lastMessageID: lastMsgID ?? "",
+                foldedTokens: folded,
+                summaryTokens: summary,
+                breakevenTurns: Math.round(economics.breakevenTurns),
+              })
+              yield* Effect.promise(() => saveFoldLedger(ledgerDir, recorded)).pipe(
+                Effect.catchCauseIf((cause) => !Cause.hasInterruptsOnly(cause), () => Effect.void),
+              )
               yield* slog.info("cache cold on resume; rebuilt from the checkpoint", {
                 sessionID,
                 agentID: lastUser.agentID,
                 foldedTokens: folded,
                 summaryTokens: summary,
                 breakevenTurns: Math.round(economics.breakevenTurns),
+                foldGeneration: recorded.blocks.length,
               })
               skipOverflowCheck = true
               continue
