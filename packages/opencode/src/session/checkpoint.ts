@@ -199,11 +199,22 @@ const TAIL_MIN_TEXT_BLOCK_MESSAGES = 5
  * Fork mode copies the parent's WHOLE prefix, so it only fits while that prefix
  * leaves room for the writer's own work — and that work is not predictable: on a
  * dpu session a writer spent ~240k tokens over 87 tool calls (reads + edits of
- * the checkpoint and memory files). Below half the budget the writer's own share
- * still fits whatever it does; above it, DELTA (which carries only the messages
- * since the last checkpoint) is the only bounded option.
+ * the checkpoint and memory files). Above the share, DELTA (which carries only the
+ * messages since the last checkpoint) is the only bounded option.
+ *
+ * The share is 0.35, not 0.5, and that is a COST decision with a fidelity price,
+ * not a free tuning knob. Measured over three days the writer averaged 217K
+ * tokens per call across 627 calls — 12.6 % of the entire bill — and the bulk of
+ * that size is the forked parent prefix, re-sent on every writer call. 0.5 admitted
+ * fork mode whenever the parent sat under half its budget, which for a 1M window
+ * is 500K of prefix copied per call; 0.35 moves the boundary 150K earlier, so a
+ * parent at 40 % of its budget now runs DELTA. DELTA sees only the messages since
+ * the last checkpoint plus the on-disk checkpoint and memory files, so a writer
+ * that would have had the whole transcript now summarises from the recent slice —
+ * the checkpoint may be thinner for a long un-checkpointed stretch. The constant
+ * is the revert point.
  */
-const FORK_MAX_CONTEXT_SHARE = 0.5
+const FORK_MAX_CONTEXT_SHARE = 0.35
 
 // How long a context rebuild waits for an in-flight checkpoint writer to finish
 // before proceeding with whatever is currently on disk (the writer keeps

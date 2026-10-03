@@ -4270,6 +4270,13 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               "A judge reviewed the transcript and reported what is still missing:",
               verdict.reason,
               "Keep working toward the goal. Do not stop until it is genuinely met or impossible.",
+              // This re-entry is the only instruction that tells the model to keep going
+              // indefinitely, and read literally it asks for maximal effort forever: it
+              // is what made a goal-driven session emit long, heavily formatted replies
+              // turn after turn. Output is billed at $1.20/M here (21 % of a measured
+              // three-day bill), so concision is a cost lever as much as a readability
+              // one. One sentence, attached to the instruction that caused it.
+              "Keep the reply short: state what changed and what is next.",
               "</system-reminder>",
             ].join("\n"),
           } satisfies MessageV2.TextPart)

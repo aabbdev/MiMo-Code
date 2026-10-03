@@ -317,10 +317,20 @@ export const Flag = {
   // result is capped so the working set cannot accumulate past the budget, while
   // already-sent results are never mutated (keeps the prompt-cache prefix
   // stable). Results that no longer fit are still spilled to disk and reachable
-  // via Read, so no information is lost. Default 512 KiB (~128k tokens); set to
+  // via Read, so no information is lost. Default 256 KiB (~64k tokens); set to
   // 0 to disable the governor and restore the legacy per-result-only cap.
+  //
+  // 512 KiB was the previous default and it is too much to re-send: at ~4 chars per
+  // token a full working set is ~128k tokens, and the measured median call is
+  // 206,875 tokens — so the working set alone could be 62 % of EVERY call, paid on
+  // 4,831 calls in three days. Uncached input is charged at $0.30/M against
+  // $0.006/M cached, so what the budget bounds is exactly the expensive kind of
+  // content. 256 KiB still admits ~16 results at the 16 KiB preview size and keeps
+  // the 4 KiB floor from working-set.ts, so a result never degrades to an empty
+  // stub — it degrades to head+tail plus the "full output saved to <path>" hint,
+  // and the model can Read the file when it needs the rest.
   get MIMOCODE_WORKING_SET_BUDGET_BYTES() {
-    return nonNegativeNumber("MIMOCODE_WORKING_SET_BUDGET_BYTES") ?? 512 * 1024
+    return nonNegativeNumber("MIMOCODE_WORKING_SET_BUDGET_BYTES") ?? 256 * 1024
   },
 
   // Emit a full per-tool schema-size audit in the `tools.audit` debug line. The

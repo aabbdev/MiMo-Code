@@ -326,7 +326,42 @@ describe("checkpoint writer forkContext shape per mode", () => {
           const svc = yield* SessionCheckpoint.Service
           const { info } = yield* seedFourMessages()
 
-          // Same session, same config — only the size differs (40% of the budget).
+          // Same session, same config — only the size differs (30% of the budget,
+          // below the 0.35 FORK_MAX_CONTEXT_SHARE, so the prefix is affordable).
+          const outcome = yield* svc.tryStartCheckpointWriter({
+            sessionID: info.id,
+            model: { providerID: "test", modelID: "test-model" },
+            context: { tokens: 300_000, budget: 1_000_000 },
+            promptOps: {} as never,
+          })
+          expect(outcome).toBe("started")
+
+          expect(captureLog.calls.length).toBe(1)
+          // Fork path captures the parent's agent from the watermark message.
+          expect(captureLog.calls[0].agentName).toBe("build")
+        }),
+      { config: {} },
+    ),
+  )
+
+  it.live(
+    "T7c: 40% of the budget no longer forks — the 0.35 share moved the boundary",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          yield* reset
+          installRecordingCapture()
+
+          const svc = yield* SessionCheckpoint.Service
+          const { info } = yield* seedFourMessages()
+
+          // 400k of a 1M budget used to fork: 0.5 admitted anything under half the
+          // budget, and forking copies the WHOLE parent prefix into every writer
+          // call. Measured, the writer averaged 217K tokens per call across 627
+          // calls — 12.6% of the bill — and most of that size was the forked
+          // prefix. The share is now 0.35, so 40% runs DELTA. This test is the
+          // revert point: if the share goes back up, this expectation flips back
+          // with it.
           const outcome = yield* svc.tryStartCheckpointWriter({
             sessionID: info.id,
             model: { providerID: "test", modelID: "test-model" },
@@ -336,8 +371,8 @@ describe("checkpoint writer forkContext shape per mode", () => {
           expect(outcome).toBe("started")
 
           expect(captureLog.calls.length).toBe(1)
-          // Fork path captures the parent's agent from the watermark message.
-          expect(captureLog.calls[0].agentName).toBe("build")
+          // No-fork path uses the writer's own agent.
+          expect(captureLog.calls[0].agentName).toBe("checkpoint-writer")
         }),
       { config: {} },
     ),
